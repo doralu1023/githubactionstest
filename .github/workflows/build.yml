@@ -1,0 +1,88 @@
+name: Build Desktop App
+
+on:
+  workflow_dispatch:
+    inputs:
+      html_base64:
+        description: 'Base64 encoded HTML content'
+        required: true
+      tool_name:
+        description: 'Tool name (no spaces, no special chars)'
+        required: true
+        default: 'MyTool'
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Inject HTML and build .app
+        run: |
+          TOOL="${{ inputs.tool_name }}"
+          HTML_B64="${{ inputs.html_base64 }}"
+
+          # 注入 Base64 HTML 到 Swift template
+          sed "s|__HTML_CONTENT_PLACEHOLDER__|${HTML_B64}|g" \
+            template/AppTemplate.swift > temp_build.swift
+
+          # 編譯
+          SDK=$(xcrun --sdk macosx --show-sdk-path)
+          swiftc -sdk "$SDK" temp_build.swift -o "$TOOL"
+
+          # 封裝 .app 結構
+          mkdir -p "dist/${TOOL}.app/Contents/MacOS"
+          mv "$TOOL" "dist/${TOOL}.app/Contents/MacOS/"
+
+          cat > "dist/${TOOL}.app/Contents/Info.plist" << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleExecutable</key><string>${TOOL}</string>
+            <key>CFBundleIdentifier</key><string>com.twec.sandbox.${TOOL}</string>
+            <key>CFBundleName</key><string>${TOOL}</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>LSMinimumSystemVersion</key><string>10.15</string>
+          </dict></plist>
+          EOF
+
+          cd dist && zip -r "${TOOL}.app.zip" "${TOOL}.app"
+
+      - name: Upload .app.zip as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.tool_name }}-mac
+          path: dist/${{ inputs.tool_name }}.app.zip
+          retention-days: 7
+
+  build-windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Inject HTML and build .exe
+        run: |
+          TOOL="${{ inputs.tool_name }}"
+          HTML_B64="${{ inputs.html_base64 }}"
+
+          mkdir -p dist
+
+          # 注入 Base64 HTML 到 Go template
+          sed "s|__HTML_CONTENT_PLACEHOLDER__|${HTML_B64}|g" \
+            winapp/main.go > temp_main.go
+
+          GOOS=windows GOARCH=amd64 go build \
+            -ldflags="-H windowsgui" \
+            -o "dist/${TOOL}.exe" \
+            temp_main.go
+
+      - name: Upload .exe as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.tool_name }}-windows
+          path: dist/${{ inputs.tool_name }}.exe
+          retention-days: 7
