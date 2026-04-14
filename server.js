@@ -69,7 +69,9 @@ app.post('/api/package', async (req, res) => {
         ref: 'main',
         inputs: {
           html_base64: htmlBase64,
-          tool_name: outputFileName
+          tool_name: outputFileName,
+          job_id: jobId,
+          callback_url: `${SERVER_URL}/api/build-complete`
         }
       },
       {
