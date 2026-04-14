@@ -4,12 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       html_base64:
-        description: 'Base64 encoded HTML content'
+        description: 'Base64 encoded HTML'
         required: true
       tool_name:
-        description: 'Tool name (no spaces, no special chars)'
+        description: 'Tool name'
         required: true
-        default: 'MyTool'
+      job_id:
+        description: 'Job ID for callback tracking'
+        required: true
+      callback_url:
+        description: 'Server callback URL'
+        required: true
 
 jobs:
   build-mac:
@@ -86,3 +91,19 @@ jobs:
           name: ${{ inputs.tool_name }}-windows
           path: dist/${{ inputs.tool_name }}.exe
           retention-days: 7
+
+  notify:
+      needs: [build-mac, build-windows]
+      runs-on: ubuntu-latest
+      if: always()
+      steps:
+        - name: Callback to server
+          run: |
+            curl -X POST ${{ inputs.callback_url }} \
+              -H "Content-Type: application/json" \
+              -H "X-Callback-Secret: ${{ secrets.CALLBACK_SECRET }}" \
+              -d '{
+                "jobId": "${{ inputs.job_id }}",
+                "runId": "${{ github.run_id }}",
+                "status": "done"
+              }'

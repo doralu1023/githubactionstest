@@ -538,53 +538,79 @@ let lastWinDownloadUrl = '';
 async function buildPackage() {
   if (!ROLES[currentRole].canDownload) { toast('🚫 No download permission.'); return; }
   const sel = document.getElementById('toolSelect');
-  const id = sel.value;
-  const tool = uploadedTools.find(t => t.id === id);
+  const tool = uploadedTools.find(t => t.id === sel.value);
   if (!tool) { toast('Please select an approved tool.'); return; }
 
   const buildLog = document.getElementById('buildLog');
   const prog = document.getElementById('buildProgress');
-  
-  buildLog.innerHTML = `<span class="log-info">[packager] 開始打包工具: ${tool.name}</span>`;
-  prog.style.width = '20%';
 
-  const payload = { toolName: tool.name, htmlContent: tool.content };
+  buildLog.innerHTML = `<span class="log-info">[packager] 觸發編譯: ${tool.name}</span>`;
+  prog.style.width = '10%';
 
   try {
-    buildLog.innerHTML += `<br><span class="log-warn">[packager] 正在執行 Swift 編譯與 .app 封裝 (請稍候)...</span>`;
-    
-    const response = await fetch('/api/package', {
+    // 觸發 workflow
+    const triggerRes = await fetch('/api/package', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify({ toolName: tool.name, htmlContent: tool.content })
     });
+    const { jobId } = await triggerRes.json();
 
-    // 如果後端回傳錯誤碼 (例如 500)
-    if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || '伺服器內部錯誤');
-    }
+    buildLog.innerHTML += `<br><span class="log-info">[packager] GitHub Actions 編譯中，jobId: ${jobId}</span>`;
+    prog.style.width = '30%';
 
-    const result = await response.json();
+    // 開始輪詢
+    await pollBuildStatus(jobId, buildLog, prog);
 
-    // 成功接收到後端回傳
-    if (result.downloadUrl) {
-      lastDownloadUrl = result.downloadUrl; // 更新全域下載變數
-      lastWinDownloadUrl = result.winDownloadUrl; // 儲存 Windows 下載位址
-      prog.style.width = '100%';
-      buildLog.innerHTML += `<br><span class="log-ok">[packager] ✅ 伺服器編譯成功！</span>`;
-      buildLog.innerHTML += `<br><span class="log-info">[packager] 下載準備就緒: ${result.downloadUrl}</span>`;
-      
-      document.getElementById('dlPanel').style.display = 'flex';
-      advanceStep(5);
-      advanceStep(6);
-      toast('📦 打包完成！請點擊 Download 鈕');
-    }
   } catch (err) {
-    console.error('Build Error:', err); // 在開發者工具顯示詳細錯誤
-    buildLog.innerHTML += `<br><span class="log-err">[packager] ❌ 請求失敗: ${err.message}</span>`;
-    toast('❌ 打包失敗，請檢查主機狀態');
+    console.error('Build Error:', err);
+    buildLog.innerHTML += `<br><span class="log-err">[packager] ❌ 失敗: ${err.message}</span>`;
+    toast('❌ 打包失敗');
   }
+}
+
+async function pollBuildStatus(jobId, buildLog, prog) {
+  const maxAttempts = 60; // 最多等 5 分鐘
+  let attempts = 0;
+
+  return new Promise((resolve, reject) => {
+    const interval = setInterval(async () => {
+      attempts++;
+      if (attempts > maxAttempts) {
+        clearInterval(interval);
+        buildLog.innerHTML += `<br><span class="log-err">[packager] ❌ 逾時，請前往 GitHub Actions 查看</span>`;
+        reject(new Error('timeout'));
+        return;
+      }
+
+      try {
+        const res = await fetch(`/api/build-status/${jobId}`);
+        const data = await res.json();
+
+        if (data.status === 'pending') {
+          const dots = '.'.repeat(attempts % 4);
+          buildLog.innerHTML += `<br><span class="log-warn">[packager] 編譯中${dots} (${attempts * 5}s)</span>`;
+          prog.style.width = Math.min(30 + attempts * 1.5, 85) + '%';
+          return;
+        }
+
+        if (data.status === 'done') {
+          clearInterval(interval);
+          prog.style.width = '100%';
+          buildLog.innerHTML += `<br><span class="log-ok">[packager] ✅ 編譯完成！</span>`;
+          buildLog.innerHTML += `<br><span class="log-info">[packager] 
+            <a href="${data.actionsUrl}" target="_blank">前往 GitHub Actions 下載 Artifact</a>
+          </span>`;
+          toast('📦 編譯完成！點連結下載');
+          advanceStep(5);
+          advanceStep(6);
+          resolve();
+        }
+      } catch (e) {
+        console.error('poll error', e);
+      }
+    }, 5000); // 每 5 秒問一次
+  });
 }
 
 /* ════════════════════════════════════════════════
