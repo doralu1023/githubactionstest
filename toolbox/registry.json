@@ -8,6 +8,10 @@
     "exmple2": {
       "title": "Exmple2",
       "category": "auction"
+    },
+    "advanced-csv-to-json-converter-filter": {
+      "title": "Advanced CSV to JSON Converter & Filter",
+      "category": "mall"
     }
   }
 }
