@@ -56,10 +56,20 @@ async function isPagesLive(url) {
   }
 }
 
-function pagesUrlFor(supplierId, toolName) {
-  const supplierSlug = slugify(supplierId);
+const INTERNAL_USER_PORTAL_ID = 'internalUser';
+
+function internalUserPathSlug(id) {
+  const slug = slugify(id);
+  if (slug === 'internaluser' || id === INTERNAL_USER_PORTAL_ID) {
+    return INTERNAL_USER_PORTAL_ID;
+  }
+  return slug;
+}
+
+function pagesUrlFor(internalUserId, toolName) {
+  const userSlug = internalUserPathSlug(internalUserId);
   const toolSlug = slugify(toolName);
-  return `${GITHUB_PAGES_BASE}/tools/${supplierSlug}/${toolSlug}/`;
+  return `${GITHUB_PAGES_BASE}/tools/${userSlug}/${toolSlug}/`;
 }
 
 let publishWorkflowInputMode = null;
@@ -128,19 +138,27 @@ function normalizeBundlePaths(files) {
 
 /**
  * Trigger publish.yml — uses Actions GITHUB_TOKEN (Contents + PR write), not the server PAT.
- * @param {{ supplierId: string, toolName: string, files: Array<{path: string, content: string, encoding?: string}>, jobId: string }} opts
+ * @param {{ internalUserId: string, toolName: string, category: string, toolTitle?: string, files: Array<{path: string, content: string, encoding?: string}>, jobId: string }} opts
  */
-async function triggerPublishWorkflow({ supplierId, toolName, files, jobId }, retried = false) {
-  const supplierSlug = slugify(supplierId);
+async function triggerPublishWorkflow(
+  { internalUserId, toolName, category, toolTitle, files, jobId },
+  retried = false
+) {
+  const userSlug = internalUserPathSlug(internalUserId);
   const toolSlug = slugify(toolName);
   const mode = await resolvePublishPayloadMode();
 
   const inputs = {
-    supplier_id: supplierSlug,
+    internal_user_id: userSlug,
     tool_name: toolSlug,
+    category: category || 'mall',
     job_id: jobId,
     callback_url: `${SERVER_URL}/api/publish-complete`,
   };
+
+  if (toolTitle) {
+    inputs.tool_title = toolTitle;
+  }
 
   if (mode === 'files') {
     inputs.files_base64 = Buffer.from(JSON.stringify(files), 'utf-8').toString('base64');
@@ -165,14 +183,17 @@ async function triggerPublishWorkflow({ supplierId, toolName, files, jobId }, re
     if (!retried && mode === 'files' && /files_base64/.test(ghMsg)) {
       publishWorkflowInputMode = 'html';
       publishWorkflowInputModeAt = Date.now();
-      return triggerPublishWorkflow({ supplierId, toolName, files, jobId }, true);
+      return triggerPublishWorkflow(
+        { internalUserId, toolName, category, toolTitle, files, jobId },
+        true
+      );
     }
     throw err;
   }
 
   return {
-    pagesUrl: pagesUrlFor(supplierId, toolName),
-    supplierSlug,
+    pagesUrl: pagesUrlFor(internalUserId, toolName),
+    internalUserSlug: userSlug,
     toolSlug,
     publishMode: mode,
   };
@@ -226,8 +247,8 @@ app.get('/api/auth/me', (req, res) => {
     email: '',
     name: 'Guest',
     canSwitchRoles: false,
-    defaultAppRole: 'supplier',
-    primaryRole: 'supplier',
+    defaultAppRole: 'internalUser',
+    primaryRole: 'internalUser',
   });
 });
 
@@ -341,10 +362,15 @@ app.post('/api/build-complete', async (req, res) => {
 
 // GitHub Pages publish — workflow_dispatch publish.yml (Actions token has Contents write)
 app.post('/api/publish', async (req, res) => {
-  const { supplierId, toolName, htmlContent, files } = req.body;
+  const { internalUserId, toolName, category, toolTitle, htmlContent, files } = req.body;
 
-  if (!supplierId || !toolName) {
-    return res.status(400).json({ error: 'supplierId and toolName are required' });
+  if (!internalUserId || !toolName) {
+    return res.status(400).json({ error: 'internalUserId and toolName are required' });
+  }
+
+  const portalCategory = String(category || '').toLowerCase();
+  if (!['mall', 'auction'].includes(portalCategory)) {
+    return res.status(400).json({ error: 'category must be "mall" or "auction"' });
   }
 
   const bundleFiles =
@@ -361,20 +387,23 @@ app.post('/api/publish', async (req, res) => {
   const publishFiles = normalizeBundlePaths(bundleFiles);
 
   const jobId = `publish-${slugify(toolName)}-${Date.now()}`;
-  const pagesUrl = pagesUrlFor(supplierId, toolName);
+  const pagesUrl = pagesUrlFor(internalUserId, toolName);
 
   publishJobs.set(jobId, {
     status: 'pending',
     toolName,
-    supplierId,
+    internalUserId,
+    category: portalCategory,
     pagesUrl,
     dispatchedAt: Date.now(),
   });
 
   try {
     const result = await triggerPublishWorkflow({
-      supplierId,
+      internalUserId,
       toolName,
+      category: portalCategory,
+      toolTitle,
       files: publishFiles,
       jobId,
     });

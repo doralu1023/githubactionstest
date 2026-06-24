@@ -2,7 +2,7 @@
    UI FEATURE FLAGS (production vs engineer)
    ?dev=1       — full UI, top nav chrome, roles, package workflow
    ?dev=0       — turn dev UI off (same as a clean URL)
-   Clean URL    — slim supplier review UI (no role/user badge in nav)
+   Clean URL    — slim internal user review UI (no role/user badge in nav)
 ════════════════════════════════════════════════ */
 const UI_FEATURES_STORAGE_KEY = 'ats-ui-features'
 
@@ -90,9 +90,9 @@ function showDesktopPackageUI() {
    STATE
 ════════════════════════════════════════════════ */
 const ROLES = {
-  supplier: {
-    label: 'Supplier',
-    email: 'supplier@vendor.com',
+  internalUser: {
+    label: 'Internal User',
+    email: 'internaluser@vendor.com',
     canUpload: true,
     canApprove: false,
     canDownload: false,
@@ -131,7 +131,7 @@ const ROLES = {
 /** Set after Okta session is loaded from GET /api/auth/me */
 let authSession = null
 
-let currentRole = 'supplier'
+let currentRole = 'internalUser'
 let uploadedTools = []
 let currentToolId = null
 let currentBlobURL = null
@@ -158,14 +158,14 @@ async function initAuth() {
       email: '',
       name: 'Guest',
       canSwitchRoles: false,
-      defaultAppRole: 'supplier',
-      primaryRole: 'supplier',
+      defaultAppRole: 'internalUser',
+      primaryRole: 'internalUser',
     }
   }
 }
 
 function getLockedAppRole() {
-  return authSession?.defaultAppRole || 'supplier'
+  return authSession?.defaultAppRole || 'internalUser'
 }
 
 function updateUserChrome() {
@@ -187,8 +187,8 @@ function updateUserChrome() {
       chip.textContent = r.label.toUpperCase()
       chip.className = 'role-chip role-chip--' + currentRole
     } else {
-      chip.textContent = (authSession?.primaryRole || 'supplier').toUpperCase()
-      chip.className = 'role-chip role-chip--' + (authSession?.primaryRole || 'supplier')
+      chip.textContent = (authSession?.primaryRole || 'internalUser').toUpperCase()
+      chip.className = 'role-chip role-chip--' + (authSession?.primaryRole || 'internalUser')
     }
   }
 }
@@ -260,15 +260,15 @@ function configureRoleSelect() {
   const sel = document.getElementById('roleSelect')
   if (!sel) return
   const full = uiFeatures.devMode
-  ;['supplier', 'reviewer', 'admin', 'user'].forEach((role) => {
+  ;['internalUser', 'reviewer', 'admin', 'user'].forEach((role) => {
     const opt = sel.querySelector(`option[value="${role}"]`)
     if (!opt) return
-    const allowed = full || role === 'supplier' || role === 'admin'
+    const allowed = full || role === 'internalUser' || role === 'admin'
     opt.hidden = !allowed
     opt.disabled = false
   })
-  if (!full && !['supplier', 'admin'].includes(currentRole)) {
-    switchRole('supplier', true)
+  if (!full && !['internalUser', 'admin'].includes(currentRole)) {
+    switchRole('internalUser', true)
   }
 }
 
@@ -1142,7 +1142,7 @@ function renderSanitizeDlSection() {
       <span class="badge badge-gray">${fileCount} file(s)</span>
       ${badge}
       <button class="btn btn-green btn-sm" onclick="downloadSanitizedZip(${idx})">⬇️ Download ZIP</button>
-      <button class="btn btn-red btn-sm" onclick="submitForPublish(${idx})">🚀 Submit PR</button>
+      <button class="btn btn-red btn-sm" onclick="promptPublishCategory(${idx})">🚀 Submit PR</button>
     </div>`
     })
     .join('')
@@ -1152,15 +1152,74 @@ function renderSanitizeDlSection() {
   if (publishPanel) publishPanel.hidden = false
 }
 
-function getSupplierId() {
+const INTERNAL_USER_PORTAL_ID = 'internalUser'
+
+function getInternalUserId() {
   const email = authSession?.email
   if (email) {
-    return email
+    const slug = email
       .split('@')[0]
       .replace(/[^a-zA-Z0-9._-]+/g, '-')
       .toLowerCase()
+    if (slug === 'internaluser') return INTERNAL_USER_PORTAL_ID
+    return slug
   }
-  return currentRole || 'supplier'
+  return INTERNAL_USER_PORTAL_ID
+}
+
+function titleFromToolSlug(slug) {
+  return slug
+    .split('-')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ')
+}
+
+function promptPublishCategory(idx) {
+  const item = sanitizeOnlyResults[idx]
+  if (!item) return
+
+  const dialog = document.getElementById('publishCategoryDialog')
+  const toolNameEl = document.getElementById('publishCategoryToolName')
+  const titleInput = document.getElementById('publishCategoryDisplayTitle')
+  const mallRadio = document.getElementById('publishCategoryMall')
+  const auctionRadio = document.getElementById('publishCategoryAuction')
+
+  if (!dialog || !toolNameEl || !titleInput || !mallRadio || !auctionRadio) {
+    submitForPublish(idx, 'mall')
+    return
+  }
+
+  const toolName = toolNameFromSanitizeItem(item)
+  toolNameEl.textContent = toolName
+  titleInput.value = titleFromToolSlug(toolName)
+  mallRadio.checked = true
+  auctionRadio.checked = false
+  dialog.dataset.publishIdx = String(idx)
+  dialog.hidden = false
+}
+
+function closePublishCategoryDialog() {
+  const dialog = document.getElementById('publishCategoryDialog')
+  if (dialog) dialog.hidden = true
+}
+
+function confirmPublishCategory() {
+  const dialog = document.getElementById('publishCategoryDialog')
+  if (!dialog) return
+
+  const idx = Number(dialog.dataset.publishIdx)
+  const categoryInput = document.querySelector('input[name="publishCategory"]:checked')
+  const titleInput = document.getElementById('publishCategoryDisplayTitle')
+  const category = categoryInput?.value
+
+  if (!category || !['mall', 'auction'].includes(category)) {
+    toast('Please choose MALL or AUCTION')
+    return
+  }
+
+  const toolTitle = titleInput?.value?.trim() || ''
+  closePublishCategoryDialog()
+  submitForPublish(idx, category, toolTitle)
 }
 
 function toolNameFromSanitizeItem(item) {
@@ -1183,18 +1242,19 @@ async function readJsonResponse(res) {
   }
 }
 
-async function submitForPublish(idx) {
+async function submitForPublish(idx, category, toolTitle) {
   const item = sanitizeOnlyResults[idx]
   if (!item) return
 
   const publishLog = document.getElementById('publishLog')
   const prog = document.getElementById('publishProgress')
   const toolName = toolNameFromSanitizeItem(item)
-  const supplierId = getSupplierId()
+  const internalUserId = getInternalUserId()
+  const portalCategory = category || 'mall'
 
   if (publishLog) {
     const fileCount = item.bundleFiles?.length ?? 0
-    publishLog.innerHTML = `<span class="log-info">[publish] Opening PR for "${escapeHTML(toolName)}" (${fileCount} file(s))…</span>`
+    publishLog.innerHTML = `<span class="log-info">[publish] Opening PR for "${escapeHTML(toolName)}" (${fileCount} file(s), ${escapeHTML(portalCategory.toUpperCase())})…</span>`
   }
   if (prog) prog.style.width = '15%'
 
@@ -1203,8 +1263,10 @@ async function submitForPublish(idx) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        supplierId,
+        internalUserId,
         toolName,
+        category: portalCategory,
+        toolTitle: toolTitle || undefined,
         files:
           item.bundleFiles && item.bundleFiles.length > 0
             ? item.bundleFiles
@@ -1522,13 +1584,13 @@ function refreshQueue() {
   const tbody = document.getElementById('queueBody')
   const r = ROLES[currentRole]
   let tools =
-    currentRole === 'supplier'
+    currentRole === 'internalUser'
       ? uploadedTools.filter((t) => t.uploadedBy === r.label)
       : uploadedTools
 
   if (tools.length === 0) {
     tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--gray-5);padding:24px;">
-      ${currentRole === 'supplier' ? 'You have not uploaded any tools yet.' : 'No tools uploaded yet'}
+      ${currentRole === 'internalUser' ? 'You have not uploaded any tools yet.' : 'No tools uploaded yet'}
     </td></tr>`
     return
   }
@@ -1552,7 +1614,7 @@ function refreshQueue() {
         actionBtns = `<button class="btn btn-ghost btn-sm" onclick="openModal('${t.id}')">Review</button>`
       } else if (r.canApprove) {
         actionBtns = `<button class="btn btn-ghost btn-sm" onclick="previewTool('${t.id}')">Preview</button>`
-      } else if (currentRole === 'supplier') {
+      } else if (currentRole === 'internalUser') {
         actionBtns = `<button class="btn btn-ghost btn-sm" onclick="previewTool('${t.id}')">Preview</button>`
       } else {
         actionBtns = '—'

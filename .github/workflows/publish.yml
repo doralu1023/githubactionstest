@@ -3,12 +3,18 @@ name: Publish Tool to GitHub Pages
 on:
   workflow_dispatch:
     inputs:
-      supplier_id:
-        description: 'Supplier slug (tools/<supplier_id>/...)'
+      internal_user_id:
+        description: 'Internal user slug (tools/<internal_user_id>/...)'
         required: true
       tool_name:
         description: 'Tool slug'
         required: true
+      category:
+        description: 'Portal category (mall or auction)'
+        required: true
+      tool_title:
+        description: 'Display title for portal nav (optional)'
+        required: false
       files_base64:
         description: 'Base64-encoded JSON array of {path, content, encoding?} for the full upload bundle'
         required: false
@@ -33,7 +39,7 @@ jobs:
 
       - name: Write sanitized tool bundle
         run: |
-          PREFIX="tools/${{ inputs.supplier_id }}/${{ inputs.tool_name }}"
+          PREFIX="tools/${{ inputs.internal_user_id }}/${{ inputs.tool_name }}"
           node <<'NODE'
           const fs = require('fs');
           const path = require('path');
@@ -90,23 +96,59 @@ jobs:
           console.log(`Wrote ${files.length} file(s) under ${prefix}/`);
           NODE
         env:
-          PREFIX: tools/${{ inputs.supplier_id }}/${{ inputs.tool_name }}
+          PREFIX: tools/${{ inputs.internal_user_id }}/${{ inputs.tool_name }}
           FILES_BASE64: ${{ inputs.files_base64 }}
           HTML_BASE64: ${{ inputs.html_base64 }}
+
+      - name: Update tool registry and portal nav
+        env:
+          GITHUB_PAGES_BASE: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+          TOOL_NAME: ${{ inputs.tool_name }}
+          TOOL_TITLE: ${{ inputs.tool_title }}
+          CATEGORY: ${{ inputs.category }}
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+
+          const registryPath = 'toolbox/registry.json';
+          const slug = process.env.TOOL_NAME;
+          const category = (process.env.CATEGORY || 'mall').toLowerCase();
+          if (!['mall', 'auction'].includes(category)) {
+            throw new Error(`Invalid category "${category}" — use mall or auction`);
+          }
+
+          const titleFromSlug = (s) =>
+            s.split('-').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+
+          let registry = { baseUrl: process.env.GITHUB_PAGES_BASE, tools: {} };
+          if (fs.existsSync(registryPath)) {
+            registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+          }
+          registry.baseUrl = process.env.GITHUB_PAGES_BASE;
+          registry.tools[slug] = {
+            title: process.env.TOOL_TITLE || registry.tools[slug]?.title || titleFromSlug(slug),
+            category,
+          };
+          fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2) + '\n');
+          console.log(`Registry updated: ${slug} → ${category}`);
+          NODE
+
+          node scripts/update-portal-nav.js
 
       - name: Push publish branch
         id: push
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          BRANCH="publish/${{ inputs.supplier_id }}-${{ inputs.tool_name }}-${{ github.run_id }}"
+          BRANCH="publish/${{ inputs.internal_user_id }}-${{ inputs.tool_name }}-${{ github.run_id }}"
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
-          git add "tools/${{ inputs.supplier_id }}/${{ inputs.tool_name }}/"
-          git commit -m "Publish tool: ${{ inputs.tool_name }} (${{ inputs.supplier_id }})"
+          git add "tools/${{ inputs.internal_user_id }}/${{ inputs.tool_name }}/"
+          git add toolbox/registry.json toolbox/index.html
+          git commit -m "Publish tool: ${{ inputs.tool_name }} (${{ inputs.internal_user_id }})"
           git push -u origin "$BRANCH"
 
       - name: Create pull request
@@ -119,11 +161,12 @@ jobs:
           TITLE="Publish: ${{ inputs.tool_name }}"
           BODY="Automated publish from AI Tool Sandbox.
 
-          - **Supplier:** \`${{ inputs.supplier_id }}\`
+          - **Internal user:** \`${{ inputs.internal_user_id }}\`
           - **Tool:** \`${{ inputs.tool_name }}\`
-          - **Path:** \`tools/${{ inputs.supplier_id }}/${{ inputs.tool_name }}/\`
+          - **Category:** \`${{ inputs.category }}\`
+          - **Path:** \`tools/${{ inputs.internal_user_id }}/${{ inputs.tool_name }}/\`
 
-          Merge to deploy via GitHub Pages."
+          Merge to deploy via GitHub Pages. Portal nav is updated in this PR."
 
           create_pr() {
             local token="$1"
@@ -153,8 +196,6 @@ jobs:
           fi
 
           if [ -z "$PR_URL" ] || [ "$PR_URL" = "null" ]; then
-            # GITHUB_TOKEN is often blocked from createPullRequest unless the repo enables:
-            # Settings → Actions → General → Allow GitHub Actions to create and approve pull requests
             echo "Falling back to pre-filled compare URL (open PR manually in one click)."
             ENCODED_TITLE=$(printf '%s' "$TITLE" | jq -sRr @uri)
             PR_URL="https://github.com/${GH_REPO}/compare/main...${BRANCH}?expand=1&title=${ENCODED_TITLE}"

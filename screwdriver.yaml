@@ -1,0 +1,11 @@
+version: 4
+shared:
+  settings:
+    email:
+      addresses:
+        - <your_userid>@yahooinc.com
+
+jobs:
+    main:
+        requires: [ ~pr, ~commit ]
+        template: nodejs/app@stable

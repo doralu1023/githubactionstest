@@ -14,7 +14,7 @@
       <div class="role-switcher" id="roleSwitcher" hidden>
         <label for="roleSelect">Role</label>
         <select id="roleSelect" onchange="switchRole(this.value)">
-          <option value="supplier" selected>Supplier</option>
+          <option value="internalUser" selected>Internal User</option>
           <option value="reviewer">Reviewer</option>
           <option value="admin">Admin</option>
           <option value="user">End User</option>
@@ -24,44 +24,44 @@
       <div class="user-badge" id="userBadge" hidden>
         <span class="dot" aria-hidden="true"></span>
         <span id="currentUserLabel">Loading…</span>
-        <span id="roleBadgeChip" class="role-chip role-chip--supplier">Supplier</span>
+        <span id="roleBadgeChip" class="role-chip role-chip--internalUser">Internal User</span>
       </div>
     </nav>
 
     <!-- ── MAIN PAGE ── -->
     <main class="page">
-      <!-- Supplier guidelines (always visible in production) -->
+      <!-- Internal user guidelines (always visible in production) -->
       <section
-        id="supplierGuidelinesBanner"
-        class="supplier-guidelines-banner"
-        aria-labelledby="supplierGuidelinesTitle"
+        id="internalUserGuidelinesBanner"
+        class="internal-user-guidelines-banner"
+        aria-labelledby="internalUserGuidelinesTitle"
       >
-        <div class="supplier-guidelines-banner__icon" aria-hidden="true">📋</div>
-        <div class="supplier-guidelines-banner__body">
-          <h2 id="supplierGuidelinesTitle" class="supplier-guidelines-banner__title">
+        <div class="internal-user-guidelines-banner__icon" aria-hidden="true">📋</div>
+        <div class="internal-user-guidelines-banner__body">
+          <h2 id="internalUserGuidelinesTitle" class="internal-user-guidelines-banner__title">
             AI generation guidelines (Prompt)
           </h2>
-          <p class="supplier-guidelines-banner__lede">
+          <p class="internal-user-guidelines-banner__lede">
             Before generating or packaging tools, align outputs with our sanitize rules and use the
             prompt template for AI agents. Advise use English only in the template to prevent
             generatingissues. If a sandbox check fails, paste fix-prompt-v1.md into your AI agent to
             regenerate a compliant version.
           </p>
-          <ul class="supplier-guidelines-banner__links">
+          <ul class="internal-user-guidelines-banner__links">
             <li>
-              <a href="./docs/supplier-skills/sanitize-rules-v1.md" target="_blank" rel="noopener"
+              <a href="./docs/internal-user-skills/sanitize-rules-v1.md" target="_blank" rel="noopener"
                 >sanitize-rules-v1.md</a
               >
               — hard requirements (reject if violated)
             </li>
             <li>
-              <a href="./docs/supplier-skills/prompt-template-v1.md" target="_blank" rel="noopener"
+              <a href="./docs/internal-user-skills/prompt-template-v1.md" target="_blank" rel="noopener"
                 >prompt-template-v1.md</a
               >
               — template example prompt for AI
             </li>
             <li>
-              <a href="./docs/supplier-skills/fix-prompt-v1.md" target="_blank" rel="noopener"
+              <a href="./docs/internal-user-skills/fix-prompt-v1.md" target="_blank" rel="noopener"
                 >fix-prompt-v1.md</a
               >
               — paste-in prompt to fix a tool that failed sanitization
@@ -597,6 +597,63 @@
       </div>
     </main>
     <!-- /page -->
+
+    <!-- ── PUBLISH CATEGORY MODAL ── -->
+    <div
+      class="modal-overlay"
+      id="publishCategoryDialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="publishCategoryDialogTitle"
+      hidden
+    >
+      <div class="modal">
+        <h3 id="publishCategoryDialogTitle">Choose portal category</h3>
+        <p>
+          Where should <strong id="publishCategoryToolName"></strong> appear on the internal user
+          portal?
+        </p>
+        <div class="category-picker" role="radiogroup" aria-label="Portal category">
+          <label class="category-picker__option category-picker__option--mall">
+            <input
+              type="radio"
+              name="publishCategory"
+              id="publishCategoryMall"
+              value="mall"
+              checked
+            />
+            <span class="category-picker__label">MALL</span>
+            <span class="category-picker__desc">Yahoo 購物中心 — internal design resources</span>
+          </label>
+          <label class="category-picker__option category-picker__option--auction">
+            <input
+              type="radio"
+              name="publishCategory"
+              id="publishCategoryAuction"
+              value="auction"
+            />
+            <span class="category-picker__label">AUCTION</span>
+            <span class="category-picker__desc">Yahoo 拍賣 — auction marketing tools</span>
+          </label>
+        </div>
+        <p class="section-title" style="margin-top: var(--space-4)">Display title (optional)</p>
+        <input
+          type="text"
+          id="publishCategoryDisplayTitle"
+          class="category-picker__title-input"
+          placeholder="Tool name shown in portal nav"
+          aria-label="Display title for portal navigation"
+        />
+        <div class="modal-actions">
+          <button class="btn btn-ghost" type="button" onclick="closePublishCategoryDialog()">
+            Cancel
+          </button>
+          <button class="btn btn-red" type="button" onclick="confirmPublishCategory()">
+            Submit to GitHub
+          </button>
+        </div>
+      </div>
+    </div>
 
     <!-- ── APPROVAL MODAL ── -->
     <div

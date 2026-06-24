@@ -5,6 +5,7 @@
     "express": "^5.2.1"
   },
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "update-portal-nav": "node scripts/update-portal-nav.js"
   }
 }

@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>素材產生器 | Yahoo! 購物中心 &amp; 拍賣</title>
+<link href="_cdn/fonts.googleapis.com/css2" rel="stylesheet"/>
+<style>
+        :root {
+            --text-main: #1a1a1a;
+            --text-sub: #666666;
+            --line-color: #e0e0e0;
+            --bg-color: #f9f9f9;
+            /* 預設顏色 (MALL) */
+            --accent-color: #7d2eff; 
+        }
+
+        /* 個別主題色定義 */
+        .mall-theme { --accent-color: #7d2eff; }
+        .auction-theme { --accent-color: #fea700; }
+        .tool-theme { --accent-color: #3083e2; }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Noto Sans TC', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            overflow-x: hidden;
+        }
+
+        header {
+            padding: 40px 60px;
+            font-size: 0.8rem;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            font-weight: 700;
+            border-bottom: 1px solid var(--line-color);
+        }
+
+        .container {
+            display: flex;
+            min-height: calc(100vh - 100px);
+            width: 100%;
+        }
+
+        .section-column {
+            flex: 1;
+            padding: 60px 40px;
+            border-right: 1px solid var(--line-color);
+            display: flex;
+            flex-direction: column;
+            transition: background 0.3s ease;
+        }
+
+        .section-column:last-child {
+            border-right: none;
+        }
+
+        .section-column:hover {
+            background-color: #ffffff;
+        }
+
+        .category-title {
+            font-family: 'Oswald', sans-serif;
+            font-size: 5rem;
+            line-height: 0.9;
+            /* 使用變數，會根據所在區塊改變顏色 */
+            color: var(--accent-color);
+            margin-bottom: 40px;
+            text-transform: uppercase;
+            word-wrap: break-word;
+        }
+
+        .menu-content {
+            flex-grow: 1;
+        }
+
+        .sub-title {
+            font-weight: 700;
+            font-size: 1.2rem;
+            margin-bottom: 5px;
+        }
+
+        .sub-desc {
+            font-size: 0.9rem;
+            color: var(--text-sub);
+            margin-bottom: 30px;
+        }
+
+        /* 圖片區塊：移除灰階濾鏡，保持彩色 */
+        .visual-box {
+            width: 100%;
+            aspect-ratio: 16 / 9;
+            background-color: #ddd;
+            margin-bottom: 30px;
+            overflow: hidden;
+        }
+        
+        .visual-box img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .nav-list {
+            list-style: none;
+        }
+
+        .nav-item {
+            margin-bottom: 12px;
+        }
+
+        .nav-link {
+            text-decoration: none;
+            color: var(--text-main);
+            font-size: 0.95rem;
+            display: block;
+            transition: transform 0.2s ease, color 0.2s ease;
+            font-weight: 400;
+        }
+
+        .nav-link--muted {
+            color: var(--text-sub);
+            cursor: default;
+        }
+
+        .nav-link:hover {
+            /* 移過時會變換為該區塊的主題色 */
+            color: var(--accent-color);
+            transform: translateX(5px);
+        }
+
+        .nav-link--muted:hover {
+            color: var(--text-sub);
+            transform: none;
+        }
+
+        .footer-meta {
+            margin-top: 40px;
+            font-size: 0.75rem;
+            color: #bbb;
+            font-family: 'Oswald', sans-serif;
+        }
+
+        @media (max-width: 900px) {
+            .container {
+                flex-direction: column;
+            }
+            .section-column {
+                border-right: none;
+                border-bottom: 1px solid var(--line-color);
+            }
+            .category-title {
+                font-size: 4rem;
+            }
+        }
+    </style>
+</head>
+<body>
+<header>Yahoo / Asset Generator Portal</header>
+<div class="container">
+<section class="section-column mall-theme">
+<div class="category-title">MALL</div>
+<div class="menu-content">
+<h2 class="sub-title">Yahoo 購物中心</h2>
+<p class="sub-desc">Internal design resources</p>
+<div class="visual-box">
+<img alt="Mall" src="images/mall.jpg"/>
+</div>
+<ul class="nav-list" id="nav-list-mall">
+<!-- NAV:MALL:START -->
+<li class="nav-item"><a class="nav-link" href="https://doralu1023.github.io/githubactionstest/toolbox/tools/supplier-pricing-profit-margin-calculator/">Supplier Pricing &amp; Profit Margin Calculator</a></li>
+<!-- NAV:MALL:END -->
+</ul>
+</div>
+<div class="footer-meta">EST. 2026.03.03</div>
+</section>
+<section class="section-column auction-theme">
+<div class="category-title">AUCTION</div>
+<div class="menu-content">
+<h2 class="sub-title">Yahoo 拍賣</h2>
+<p class="sub-desc">Auction marketing tools</p>
+<div class="visual-box">
+<img alt="Auction" src="images/buy.jpg"/>
+</div>
+<ul class="nav-list" id="nav-list-auction">
+<!-- NAV:AUCTION:START -->
+<li class="nav-item"><a class="nav-link" href="https://doralu1023.github.io/githubactionstest/toolbox/tools/index/">index</a></li>
+<!-- NAV:AUCTION:END -->
+</ul>
+</div>
+<div class="footer-meta">EST. 2026.02.10</div>
+</section>
+</div>
+</body>
+</html>
