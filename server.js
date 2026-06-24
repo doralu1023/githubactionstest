@@ -4,6 +4,7 @@ const axios = require('axios');
 const https = require('https');
 const path = require('path');
 const crypto = require('crypto');
+const fs = require('fs');
 const app = express();
 
 app.use(express.json({ limit: '10mb' }));
@@ -18,6 +19,7 @@ const PUBLISH_BUNDLE_TTL_MS = 2 * 60 * 60 * 1000;
 
 const CALLBACK_SECRET = process.env.CALLBACK_SECRET;
 const GH_TOKEN = process.env.GITHUB_TOKEN;
+const PUBLISH_PAT = process.env.PUBLISH_PAT;
 const GH_REPO = process.env.GITHUB_REPO;
 const SERVER_URL = process.env.SERVER_URL;
 
@@ -34,6 +36,41 @@ const ghHeaders = {
   'X-GitHub-Api-Version': '2022-11-28',
 };
 
+function getPublishToken() {
+  return PUBLISH_PAT || GH_TOKEN;
+}
+
+function ghHeadersFor(token) {
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+  };
+}
+
+function githubApiErrorMessage(err, step) {
+  const ghMsg = err.response?.data?.message;
+  const detail = ghMsg || err.message || 'Unknown GitHub API error';
+  return step ? `${step}: ${detail}` : detail;
+}
+
+function isGitHubTokenAccessError(message) {
+  return /Resource not accessible by (personal access token|integration)/i.test(message || '');
+}
+
+function formatPublishTokenHelp() {
+  return (
+    'GitHub token cannot write to this repo. Set PUBLISH_PAT in .env (preferred) or GITHUB_TOKEN with: ' +
+    'fine-grained — Contents (Read/Write) + Pull requests (Read/Write) on this repo; ' +
+    'classic — repo scope. Authorize SSO for org repos if prompted.'
+  );
+}
+
+function compareUrlForBranch(branch, title) {
+  const encodedTitle = encodeURIComponent(title);
+  return `https://github.com/${GH_REPO}/compare/main...${branch}?expand=1&title=${encodedTitle}`;
+}
+
 function slugify(value) {
   return String(value)
     .replace(/\.(html|htm)$/i, '')
@@ -45,6 +82,51 @@ function slugify(value) {
 async function ghGet(url) {
   const res = await axios.get(url, { headers: ghHeaders });
   return res.data;
+}
+
+async function ghPost(url, body) {
+  const res = await axios.post(url, body, { headers: ghHeaders });
+  return res.data;
+}
+
+async function ghGetWith(url, token, step) {
+  try {
+    const res = await axios.get(url, { headers: ghHeadersFor(token) });
+    return res.data;
+  } catch (err) {
+    throw new Error(githubApiErrorMessage(err, step));
+  }
+}
+
+async function ghPostWith(url, body, token, step) {
+  try {
+    const res = await axios.post(url, body, { headers: ghHeadersFor(token) });
+    return res.data;
+  } catch (err) {
+    throw new Error(githubApiErrorMessage(err, step));
+  }
+}
+
+async function getRepoContentText(filePath, ref = 'main', token = getPublishToken()) {
+  try {
+    const data = await ghGetWith(
+      `https://api.github.com/repos/${GH_REPO}/contents/${filePath}?ref=${ref}`,
+      token,
+      `Read ${filePath}`
+    );
+    if (Array.isArray(data)) return null;
+    return Buffer.from(data.content, 'base64').toString('utf8');
+  } catch (err) {
+    if (/404/.test(err.message)) return null;
+    throw err;
+  }
+}
+
+function titleFromSlug(slug) {
+  return slug
+    .split('-')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
 }
 
 async function isPagesLive(url) {
@@ -114,8 +196,205 @@ function normalizeBundlePaths(files) {
   }));
 }
 
+async function preparePublishAssetsAsync(toolSlug, category, toolTitle, files, token) {
+  const registryPath = path.join(__dirname, 'toolbox', 'registry.json');
+  const toolDir = path.join(__dirname, 'toolbox', 'tools', toolSlug);
+
+  fs.mkdirSync(toolDir, { recursive: true });
+  for (const file of files) {
+    const dest = path.join(toolDir, file.path);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    if (file.encoding === 'base64') {
+      fs.writeFileSync(dest, Buffer.from(file.content, 'base64'));
+    } else {
+      fs.writeFileSync(dest, file.content, 'utf8');
+    }
+  }
+
+  let registry;
+  const remoteRegistry = await getRepoContentText('toolbox/registry.json', 'main', token);
+  if (remoteRegistry) {
+    registry = JSON.parse(remoteRegistry);
+  } else if (fs.existsSync(registryPath)) {
+    registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+  } else {
+    registry = { baseUrl: GITHUB_PAGES_BASE, tools: {} };
+  }
+
+  registry.baseUrl = GITHUB_PAGES_BASE || registry.baseUrl;
+  registry.tools[toolSlug] = {
+    title: toolTitle || registry.tools[toolSlug]?.title || titleFromSlug(toolSlug),
+    category,
+  };
+  fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2) + '\n');
+
+  return {
+    registryContent: fs.readFileSync(registryPath, 'utf8'),
+  };
+}
+
+async function createGitBlob(content, encoding, token) {
+  const body =
+    encoding === 'base64'
+      ? { content, encoding: 'base64' }
+      : { content, encoding: 'utf-8' };
+  return ghPostWith(
+    `https://api.github.com/repos/${GH_REPO}/git/blobs`,
+    body,
+    token,
+    'Create file blob'
+  );
+}
+
 /**
- * Trigger publish.yml — uses Actions GITHUB_TOKEN (Contents + PR write), not the server PAT.
+ * Create branch + PR via GitHub Git API (no workflow bundle fetch required).
+ */
+async function publishViaGitHubApi({
+  internalUserId,
+  toolName,
+  category,
+  toolTitle,
+  files,
+}) {
+  const token = getPublishToken();
+  if (!token || !GH_REPO) {
+    throw new Error('Set PUBLISH_PAT (preferred) or GITHUB_TOKEN, and GITHUB_REPO in .env');
+  }
+
+  const userSlug = internalUserPathSlug(internalUserId);
+  const toolSlug = slugify(toolName);
+  const toolPrefix = `toolbox/tools/${toolSlug}`;
+  const branch = `publish/${userSlug}-${toolSlug}-${Date.now()}`;
+
+  await ghGetWith(
+    `https://api.github.com/repos/${GH_REPO}`,
+    token,
+    'Verify repo access'
+  );
+
+  const { registryContent } = await preparePublishAssetsAsync(
+    toolSlug,
+    category,
+    toolTitle || titleFromSlug(toolSlug),
+    files,
+    token
+  );
+
+  const mainRef = await ghGetWith(
+    `https://api.github.com/repos/${GH_REPO}/git/ref/heads/main`,
+    token,
+    'Read main branch'
+  );
+  const baseSha = mainRef.object.sha;
+  const baseCommit = await ghGetWith(
+    `https://api.github.com/repos/${GH_REPO}/git/commits/${baseSha}`,
+    token,
+    'Read base commit'
+  );
+
+  const tree = [];
+  for (const file of files) {
+    const blob = await createGitBlob(file.content, file.encoding, token);
+    tree.push({
+      path: `${toolPrefix}/${String(file.path).replace(/\\/g, '/')}`,
+      mode: '100644',
+      type: 'blob',
+      sha: blob.sha,
+    });
+  }
+
+  const registryBlob = await createGitBlob(registryContent, 'utf-8', token);
+  tree.push({
+    path: 'toolbox/registry.json',
+    mode: '100644',
+    type: 'blob',
+    sha: registryBlob.sha,
+  });
+
+  const newTree = await ghPostWith(
+    `https://api.github.com/repos/${GH_REPO}/git/trees`,
+    { base_tree: baseCommit.tree.sha, tree },
+    token,
+    'Create commit tree'
+  );
+
+  const commit = await ghPostWith(
+    `https://api.github.com/repos/${GH_REPO}/git/commits`,
+    {
+      message: `Publish tool: ${toolSlug} (${userSlug})`,
+      tree: newTree.sha,
+      parents: [baseSha],
+    },
+    token,
+    'Create commit'
+  );
+
+  await ghPostWith(
+    `https://api.github.com/repos/${GH_REPO}/git/refs`,
+    { ref: `refs/heads/${branch}`, sha: commit.sha },
+    token,
+    'Push publish branch'
+  );
+
+  const prTitle = `Publish: ${toolSlug}`;
+  let prUrl;
+  let prNumber = 0;
+
+  try {
+    const pr = await ghPostWith(
+      `https://api.github.com/repos/${GH_REPO}/pulls`,
+      {
+        title: prTitle,
+        head: branch,
+        base: 'main',
+        body: `Automated publish from AI Tool Sandbox.
+
+- **Internal user:** \`${userSlug}\`
+- **Tool:** \`${toolSlug}\`
+- **Category:** \`${category}\`
+- **Path:** \`toolbox/tools/${toolSlug}/\`
+
+Merge to deploy via GitHub Pages. Portal nav updates after the tool page is live.`,
+      },
+      token,
+      'Open pull request'
+    );
+    prUrl = pr.html_url;
+    prNumber = pr.number;
+  } catch (prErr) {
+    if (!isGitHubTokenAccessError(prErr.message)) {
+      throw prErr;
+    }
+    console.warn('[PUBLISH] PR API blocked — returning compare URL:', prErr.message);
+    prUrl = compareUrlForBranch(branch, prTitle);
+  }
+
+  return {
+    prUrl,
+    prNumber,
+    pagesUrl: pagesUrlFor(internalUserId, toolName),
+    internalUserSlug: userSlug,
+    toolSlug,
+    publishMode: PUBLISH_PAT ? 'github_api_pat' : 'github_api',
+  };
+}
+
+function publicPublishStatus(job) {
+  const payload = {
+    status: job.status,
+    prUrl: job.prUrl,
+    actionsUrl: job.actionsUrl,
+    error: job.error,
+    message: job.message,
+  };
+  if (job.status === 'deploying' || job.status === 'merged') {
+    payload.pagesUrl = job.pagesUrl;
+  }
+  return payload;
+}
+
+/**
+ * Trigger publish.yml — legacy fallback when GitHub API publish is unavailable.
  * @param {{ internalUserId: string, toolName: string, category: string, toolTitle?: string, files: Array<{path: string, content: string, encoding?: string}>, jobId: string }} opts
  */
 async function triggerPublishWorkflow(
@@ -371,43 +650,74 @@ app.post('/api/publish', async (req, res) => {
     dispatchedAt: Date.now(),
   });
 
-  purgeExpiredPublishBundles();
-  publishBundles.set(jobId, { files: publishFiles, createdAt: Date.now() });
-
   try {
-    const result = await triggerPublishWorkflow({
+    const result = await publishViaGitHubApi({
       internalUserId,
       toolName,
       category: portalCategory,
       toolTitle,
       files: publishFiles,
-      jobId,
+    });
+
+    publishJobs.set(jobId, {
+      status: 'pr_open',
+      toolName,
+      internalUserId,
+      category: portalCategory,
+      pagesUrl: result.pagesUrl,
+      prUrl: result.prUrl,
+      prNumber: result.prNumber,
+      dispatchedAt: Date.now(),
+      publishMode: result.publishMode,
     });
 
     res.json({
       jobId,
-      pagesUrl,
+      prUrl: result.prUrl,
       publishMode: result.publishMode,
-      warning:
-        result.publishMode === 'html' && publishFiles.length > 1
-          ? 'Remote publish.yml only supports index.html. Push the updated publish.yml to GitHub to deploy the full ZIP bundle.'
-          : undefined,
     });
   } catch (err) {
     console.error('[PUBLISH]', err.response?.data || err.message);
+    const errMsg = err.response?.data?.message || err.message || 'Publish failed';
+
+    if (isGitHubTokenAccessError(errMsg) && SERVER_URL) {
+      try {
+        console.warn('[PUBLISH] Direct API failed — falling back to publish workflow via', SERVER_URL);
+        purgeExpiredPublishBundles();
+        publishBundles.set(jobId, { files: publishFiles, createdAt: Date.now() });
+        const wf = await triggerPublishWorkflow({
+          internalUserId,
+          toolName,
+          category: portalCategory,
+          toolTitle,
+          files: publishFiles,
+          jobId,
+        });
+        publishJobs.set(jobId, {
+          status: 'pending',
+          toolName,
+          internalUserId,
+          category: portalCategory,
+          pagesUrl: wf.pagesUrl,
+          dispatchedAt: Date.now(),
+          publishMode: wf.publishMode,
+        });
+        return res.json({
+          jobId,
+          publishMode: wf.publishMode,
+          warning: 'Opened via GitHub Actions (PUBLISH_PAT/GITHUB_TOKEN lacks direct repo write).',
+        });
+      } catch (wfErr) {
+        console.error('[PUBLISH] workflow fallback failed', wfErr.response?.data || wfErr.message);
+      }
+    }
+
     publishJobs.delete(jobId);
-    publishBundles.delete(jobId);
-    const ghMsg = err.response?.data?.message;
-    let msg = ghMsg || err.message || 'Publish failed';
-    if (ghMsg === 'Not Found') {
-      msg =
-        'publish.yml not found on main — push .github/workflows/publish.yml to GitHub first.';
-    } else if (/Unexpected inputs provided/.test(ghMsg || '')) {
-      msg =
-        'publish.yml on GitHub main is out of date — push the latest .github/workflows/publish.yml (bundle_url input) to the repo, then retry.';
-    } else if (/inputs are too large/i.test(ghMsg || '')) {
-      msg =
-        `Bundle exceeds GitHub workflow input limit (${GH_WORKFLOW_INPUT_LIMIT} chars). Push the latest publish.yml (bundle_url fetch mode) to GitHub, then retry.`;
+    let msg = errMsg;
+    if (isGitHubTokenAccessError(msg)) {
+      msg = formatPublishTokenHelp();
+    } else if (msg === 'Not Found') {
+      msg = 'GitHub repo or branch not found — check GITHUB_REPO in .env.';
     }
     res.status(500).json({ error: msg });
   }
@@ -464,13 +774,7 @@ app.get('/api/publish-status/:jobId', async (req, res) => {
     if (current.status !== 'pending') {
       publishJobs.set(req.params.jobId, current);
     }
-    return res.json({
-      status: current.status,
-      prUrl: current.prUrl,
-      pagesUrl: current.pagesUrl,
-      actionsUrl: current.actionsUrl,
-      error: current.error,
-    });
+    return res.json(publicPublishStatus(current));
   }
 
   if (current.status === 'pr_open' && current.prNumber) {
@@ -491,19 +795,9 @@ app.get('/api/publish-status/:jobId', async (req, res) => {
     const live = await isPagesLive(current.pagesUrl);
     if (live) {
       publishJobs.set(req.params.jobId, { ...current, status: 'merged' });
-      return res.json({
-        status: 'merged',
-        prUrl: current.prUrl,
-        pagesUrl: current.pagesUrl,
-      });
+      return res.json(publicPublishStatus({ ...current, status: 'merged' }));
     }
-    return res.json({
-      status: 'deploying',
-      prUrl: current.prUrl,
-      pagesUrl: current.pagesUrl,
-      actionsUrl: current.actionsUrl,
-      message: 'PR merged — waiting for GitHub Pages deploy',
-    });
+    return res.json(publicPublishStatus({ ...current, message: 'PR merged — waiting for GitHub Pages deploy' }));
   }
 
   if (current.status === 'pr_open' && !current.prNumber && current.pagesUrl) {
@@ -511,21 +805,11 @@ app.get('/api/publish-status/:jobId', async (req, res) => {
     const live = await isPagesLive(current.pagesUrl);
     if (live) {
       publishJobs.set(req.params.jobId, { ...current, status: 'merged' });
-      return res.json({
-        status: 'merged',
-        prUrl: current.prUrl,
-        pagesUrl: current.pagesUrl,
-      });
+      return res.json(publicPublishStatus({ ...current, status: 'merged' }));
     }
   }
 
-  res.json({
-    status: current.status,
-    prUrl: current.prUrl,
-    pagesUrl: current.pagesUrl,
-    actionsUrl: current.actionsUrl,
-    error: current.error,
-  });
+  res.json(publicPublishStatus(current));
 });
 
 // 前端輪詢
@@ -550,6 +834,5 @@ app.use(express.static(path.join(__dirname)));
 
 app.listen(3000, () => {
   console.log('Server 運行於 http://localhost:3000');
-  console.log('[routes] POST /api/publish → workflow publish.yml');
-  console.log('[routes] GET  /api/publish-bundle/:jobId → bundle fetch for Actions');
+  console.log('[routes] POST /api/publish → GitHub API (branch + PR)');
 });

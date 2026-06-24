@@ -127,7 +127,7 @@ jobs:
           });
           NODE
 
-      - name: Update tool registry and portal nav
+      - name: Update tool registry
         env:
           GITHUB_PAGES_BASE: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
           TOOL_NAME: ${{ inputs.tool_name }}
@@ -160,8 +160,6 @@ jobs:
           console.log(`Registry updated: ${slug} → ${category}`);
           NODE
 
-          node scripts/update-portal-nav.js
-
       - name: Push publish branch
         id: push
         env:
@@ -174,7 +172,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
           git add "toolbox/tools/${{ inputs.tool_name }}/"
-          git add toolbox/registry.json toolbox/index.html
+          git add toolbox/registry.json
           git commit -m "Publish tool: ${{ inputs.tool_name }} (${{ inputs.internal_user_id }})"
           git push -u origin "$BRANCH"
 
@@ -193,7 +191,7 @@ jobs:
           - **Category:** \`${{ inputs.category }}\`
           - **Path:** \`toolbox/tools/${{ inputs.tool_name }}/\`
 
-          Merge to deploy via GitHub Pages. Portal nav is updated in this PR."
+          Merge to deploy via GitHub Pages. Portal nav updates after the tool page is live."
 
           create_pr() {
             local token="$1"

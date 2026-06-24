@@ -1285,9 +1285,11 @@ async function submitForPublish(idx, category, toolTitle) {
       if (data.warning) {
         publishLog.innerHTML += `<br><span class="log-warn">[publish] ⚠️ ${escapeHTML(data.warning)}</span>`
       }
-      publishLog.innerHTML += `<br><span class="log-info">[publish] Publish workflow started — creating PR (not Pages deploy yet)…</span>`
-      if (data.pagesUrl) {
-        publishLog.innerHTML += `<br><span class="log-info">[publish] Live URL after merge: <a href="${data.pagesUrl}" target="_blank" rel="noopener">${escapeHTML(data.pagesUrl)}</a></span>`
+      if (data.prUrl) {
+        publishLog.innerHTML += `<br><span class="log-ok">[publish] ✅ PR opened: <a href="${data.prUrl}" target="_blank" rel="noopener">Review on GitHub</a></span>`
+        publishLog.dataset.prShown = '1'
+      } else {
+        publishLog.innerHTML += `<br><span class="log-info">[publish] Creating pull request…</span>`
       }
     }
     if (prog) prog.style.width = '40%'
@@ -1301,7 +1303,9 @@ async function submitForPublish(idx, category, toolTitle) {
 }
 
 async function pollPublishStatus(jobId, publishLog, prog) {
-  const maxAttempts = 120
+  const pollIntervalMs = 5000
+  /** Total wall-clock budget: PR wait + Pages deploy (deploy alone can take ~7 min). */
+  const maxAttempts = 240 // 240 × 5s = 20 minutes
   let attempts = 0
 
   return new Promise((resolve, reject) => {
@@ -1310,7 +1314,8 @@ async function pollPublishStatus(jobId, publishLog, prog) {
       if (attempts > maxAttempts) {
         clearInterval(interval)
         if (publishLog) {
-          publishLog.innerHTML += `<br><span class="log-err">[publish] ❌ Timeout waiting for merge</span>`
+          const waitedMin = Math.round((maxAttempts * pollIntervalMs) / 60000)
+          publishLog.innerHTML += `<br><span class="log-err">[publish] ❌ Timed out after ${waitedMin} minutes (PR merge + GitHub Pages deploy). Check Actions → Deploy GitHub Pages, then open the live URL manually.</span>`
         }
         reject(new Error('timeout'))
         return
@@ -1323,9 +1328,7 @@ async function pollPublishStatus(jobId, publishLog, prog) {
 
         if (data.status === 'pending') {
           if (publishLog && attempts <= 3) {
-            publishLog.innerHTML += `<br><span class="log-warn">[publish] Publish workflow running — opening PR… (${attempts * 5}s)</span>`
-          } else if (publishLog && attempts === 6) {
-            publishLog.innerHTML += `<br><span class="log-info">[publish] Still waiting for PR link from publish workflow…</span>`
+            publishLog.innerHTML += `<br><span class="log-warn">[publish] Waiting for PR… (${Math.round((attempts * pollIntervalMs) / 1000)}s)</span>`
           }
           return
         }
@@ -1333,12 +1336,9 @@ async function pollPublishStatus(jobId, publishLog, prog) {
         if (data.status === 'failed') {
           clearInterval(interval)
           if (publishLog) {
-            publishLog.innerHTML += `<br><span class="log-err">[publish] ❌ ${escapeHTML(data.error || 'Workflow failed')}</span>`
-            if (data.actionsUrl) {
-              publishLog.innerHTML += `<br><span class="log-info">[publish] <a href="${data.actionsUrl}" target="_blank" rel="noopener">View workflow run</a></span>`
-            }
+            publishLog.innerHTML += `<br><span class="log-err">[publish] ❌ ${escapeHTML(data.error || 'Publish failed')}</span>`
           }
-          reject(new Error(data.error || 'workflow failed'))
+          reject(new Error(data.error || 'publish failed'))
           return
         }
 
@@ -1347,11 +1347,9 @@ async function pollPublishStatus(jobId, publishLog, prog) {
           if (data.prUrl && publishLog && !publishLog.dataset.prShown) {
             publishLog.dataset.prShown = '1'
             publishLog.innerHTML += `<br><span class="log-ok">[publish] ✅ PR opened: <a href="${data.prUrl}" target="_blank" rel="noopener">Review on GitHub</a></span>`
-            if (data.actionsUrl) {
-              publishLog.innerHTML += `<br><span class="log-info">[publish] <a href="${data.actionsUrl}" target="_blank" rel="noopener">View publish workflow</a> (not Pages deploy)</span>`
-            }
+            publishLog.innerHTML += `<br><span class="log-info">[publish] Merge the PR to deploy — live URL will appear here after Pages deploys (often 3–7 min).</span>`
           } else if (attempts % 6 === 0 && publishLog) {
-            publishLog.innerHTML += `<br><span class="log-warn">[publish] Awaiting PR merge on GitHub… (${attempts * 5}s)</span>`
+            publishLog.innerHTML += `<br><span class="log-warn">[publish] Awaiting PR merge on GitHub… (${Math.round((attempts * pollIntervalMs) / 1000)}s)</span>`
           }
           return
         }
@@ -1361,9 +1359,11 @@ async function pollPublishStatus(jobId, publishLog, prog) {
           if (publishLog && !publishLog.dataset.deployShown) {
             publishLog.dataset.deployShown = '1'
             publishLog.innerHTML += `<br><span class="log-ok">[publish] ✅ PR merged — GitHub Pages deploying…</span>`
-            publishLog.innerHTML += `<br><span class="log-info">[publish] Check the &quot;Deploy GitHub Pages&quot; workflow on Actions tab.</span>`
+            if (data.pagesUrl) {
+              publishLog.innerHTML += `<br><span class="log-info">[publish] Live URL (GitHub Pages often takes 3–7 min): <a href="${data.pagesUrl}" target="_blank" rel="noopener">${escapeHTML(data.pagesUrl)}</a></span>`
+            }
           } else if (attempts % 6 === 0 && publishLog) {
-            publishLog.innerHTML += `<br><span class="log-warn">[publish] Waiting for Pages deploy… (${attempts * 5}s)</span>`
+            publishLog.innerHTML += `<br><span class="log-warn">[publish] Waiting for Pages deploy… (${Math.round((attempts * pollIntervalMs) / 1000)}s)</span>`
           }
           return
         }
@@ -1383,7 +1383,7 @@ async function pollPublishStatus(jobId, publishLog, prog) {
       } catch (e) {
         console.error('publish poll error', e)
       }
-    }, 5000)
+    }, pollIntervalMs)
   })
 }
 

@@ -156,4 +156,8 @@ function main() {
   );
 }
 
-main();
+module.exports = { updatePortalNav: main };
+
+if (require.main === module) {
+  main();
+}
