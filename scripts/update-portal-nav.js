@@ -136,8 +136,8 @@ function main() {
   }
 
   if (!fs.existsSync(TOOLS_DIR)) {
-    console.error(`[portal-nav] Tools directory not found: ${TOOLS_DIR}`);
-    process.exit(1);
+    fs.mkdirSync(TOOLS_DIR, { recursive: true });
+    console.log(`[portal-nav] Created empty tools directory: ${TOOLS_DIR}`);
   }
 
   const registry = readRegistry();
