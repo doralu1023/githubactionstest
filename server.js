@@ -4,7 +4,6 @@ const axios = require('axios');
 const https = require('https');
 const path = require('path');
 const crypto = require('crypto');
-const fs = require('fs');
 const app = express();
 
 app.use(express.json({ limit: '10mb' }));
@@ -196,27 +195,11 @@ function normalizeBundlePaths(files) {
   }));
 }
 
-async function preparePublishAssetsAsync(toolSlug, category, toolTitle, files, token) {
-  const registryPath = path.join(__dirname, 'toolbox', 'registry.json');
-  const toolDir = path.join(__dirname, 'toolbox', 'tools', toolSlug);
-
-  fs.mkdirSync(toolDir, { recursive: true });
-  for (const file of files) {
-    const dest = path.join(toolDir, file.path);
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    if (file.encoding === 'base64') {
-      fs.writeFileSync(dest, Buffer.from(file.content, 'base64'));
-    } else {
-      fs.writeFileSync(dest, file.content, 'utf8');
-    }
-  }
-
+async function buildRegistryContentAsync(toolSlug, category, toolTitle, token) {
   let registry;
   const remoteRegistry = await getRepoContentText('toolbox/registry.json', 'main', token);
   if (remoteRegistry) {
     registry = JSON.parse(remoteRegistry);
-  } else if (fs.existsSync(registryPath)) {
-    registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
   } else {
     registry = { baseUrl: GITHUB_PAGES_BASE, tools: {} };
   }
@@ -226,11 +209,8 @@ async function preparePublishAssetsAsync(toolSlug, category, toolTitle, files, t
     title: toolTitle || registry.tools[toolSlug]?.title || titleFromSlug(toolSlug),
     category,
   };
-  fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2) + '\n');
 
-  return {
-    registryContent: fs.readFileSync(registryPath, 'utf8'),
-  };
+  return JSON.stringify(registry, null, 2) + '\n';
 }
 
 async function createGitBlob(content, encoding, token) {
@@ -272,11 +252,10 @@ async function publishViaGitHubApi({
     'Verify repo access'
   );
 
-  const { registryContent } = await preparePublishAssetsAsync(
+  const registryContent = await buildRegistryContentAsync(
     toolSlug,
     category,
     toolTitle || titleFromSlug(toolSlug),
-    files,
     token
   );
 
