@@ -1,10 +1,6 @@
 name: Update Internal User Portal Nav
 
 on:
-  workflow_run:
-    workflows: [Deploy GitHub Pages]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -12,23 +8,18 @@ permissions:
 
 jobs:
   update-nav:
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || github.event.workflow_run.head_sha }}
           fetch-depth: 0
 
       - name: Regenerate portal nav from registry
         env:
           GITHUB_PAGES_BASE: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
-        run: |
-          node scripts/update-portal-nav.js --write-registry-for-new
+        run: node scripts/update-portal-nav.js --write-registry-for-new
 
       - name: Commit portal updates if changed
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -39,5 +30,5 @@ jobs:
           fi
 
           git add toolbox/index.html toolbox/registry.json
-          git commit -m "chore(portal): auto-update toolbox nav after Pages deploy"
+          git commit -m "chore(portal): auto-update toolbox nav"
           git push
