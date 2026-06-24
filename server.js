@@ -785,6 +785,10 @@ app.get('/api/publish-status/:jobId', async (req, res) => {
       if (pr.merged) {
         publishJobs.set(req.params.jobId, { ...current, status: 'deploying' });
         current = { ...current, status: 'deploying' };
+      } else if (pr.state === 'closed') {
+        const error = 'PR was closed without merge';
+        publishJobs.set(req.params.jobId, { ...current, status: 'failed', error });
+        return res.json(publicPublishStatus({ ...current, status: 'failed', error }));
       }
     } catch {
       /* PAT may lack pull_requests:read */

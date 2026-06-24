@@ -139,6 +139,12 @@ let currentBlobURL = null
 // Sanitize-only results: [{ name, content, sanitResult }]
 let sanitizeOnlyResults = []
 
+/** Active GitHub publish job — keeps log visible across UI resets. */
+let activePublishJob = null
+
+const TOOL_CSP =
+  "default-src 'unsafe-inline' data: blob: 'self'; script-src 'unsafe-inline' data: blob: 'self'; style-src 'unsafe-inline' data: blob: 'self'; img-src 'unsafe-inline' data: blob: 'self'; font-src 'unsafe-inline' data: blob: 'self'; connect-src 'none';"
+
 /* ════════════════════════════════════════════════
    OKTA AUTH (session via /api/auth/me)
 ════════════════════════════════════════════════ */
@@ -288,7 +294,7 @@ function applyProductionUI() {
     if (sanitizeRadio) sanitizeRadio.checked = true
     const desc = document.getElementById('modeDescription')
     if (desc) desc.innerHTML = MODE_DESC.sanitize
-    resetSanitizeDlSection()
+    if (!activePublishJob?.polling) resetSanitizeDlSection()
   }
 
   const reviewHeading = document.getElementById('reviewLaneHeading')
@@ -458,7 +464,11 @@ document.querySelectorAll('input[name="uploadMode"]').forEach((radio) => {
   radio.addEventListener('change', () => {
     const desc = document.getElementById('modeDescription')
     if (desc) desc.innerHTML = MODE_DESC[radio.value] || ''
-    // Clear leftover download section on mode switch
+    if (activePublishJob?.polling) {
+      toast('Publish still in progress — log kept below.')
+      ensurePublishPanelVisible()
+      return
+    }
     resetSanitizeDlSection()
   })
 })
@@ -469,7 +479,52 @@ function getUploadMode() {
   return checked ? checked.value : 'sanitize'
 }
 
+function ensurePublishPanelVisible() {
+  const sec = document.getElementById('sanitDlSection')
+  const publishPanel = document.getElementById('publishPanel')
+  if (sec) sec.style.display = ''
+  if (publishPanel) {
+    publishPanel.hidden = false
+    publishPanel.removeAttribute('hidden')
+  }
+  publishPanel?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+}
+
+function restorePublishPanelFromJob() {
+  if (!activePublishJob) return
+  const publishLog = document.getElementById('publishLog')
+  const prog = document.getElementById('publishProgress')
+  ensurePublishPanelVisible()
+  if (publishLog && activePublishJob.logHtml) {
+    publishLog.innerHTML = activePublishJob.logHtml
+    if (activePublishJob.prShown) publishLog.dataset.prShown = '1'
+    if (activePublishJob.deployShown) publishLog.dataset.deployShown = '1'
+  }
+  if (prog && activePublishJob.progress) prog.style.width = activePublishJob.progress
+}
+
+function appendPublishLog(publishLog, html) {
+  if (!publishLog) return
+  publishLog.innerHTML += html
+  if (activePublishJob) activePublishJob.logHtml = publishLog.innerHTML
+}
+
+function setPublishLog(publishLog, html) {
+  if (!publishLog) return
+  publishLog.innerHTML = html
+  if (activePublishJob) activePublishJob.logHtml = html
+}
+
 function resetSanitizeDlSection() {
+  if (activePublishJob?.polling) {
+    sanitizeOnlyResults = []
+    const list = document.getElementById('sanitDlList')
+    if (list) list.innerHTML = ''
+    restorePublishPanelFromJob()
+    return
+  }
+
+  activePublishJob = null
   sanitizeOnlyResults = []
   const sec = document.getElementById('sanitDlSection')
   if (sec) sec.style.display = 'none'
@@ -480,6 +535,8 @@ function resetSanitizeDlSection() {
   const publishLog = document.getElementById('publishLog')
   if (publishLog) {
     publishLog.innerHTML = '<span class="log-info">[publish] Submit a sanitized tool to begin…</span>'
+    delete publishLog.dataset.prShown
+    delete publishLog.dataset.deployShown
   }
   const publishProg = document.getElementById('publishProgress')
   if (publishProg) publishProg.style.width = '0%'
@@ -787,15 +844,6 @@ function inlineAssets(html, assetMap) {
   })
 }
 
-/**
- * CSP-safe publish artifact: one self-contained index.html (assets inlined as data: URLs).
- * @param {string} sanitizedInlinedHtml
- * @returns {{ path: string, content: string }[]}
- */
-function buildPublishBundle(sanitizedInlinedHtml) {
-  return [{ path: 'index.html', content: sanitizedInlinedHtml }]
-}
-
 /* ════════════════════════════════════════════════
    MAIN FILE HANDLER
 ════════════════════════════════════════════════ */
@@ -824,7 +872,7 @@ async function handleFiles(files) {
   uploadProg.style.width = '10%'
   uploadStat.textContent = `Processing ${files.length} file(s) (${formatFileSize(totalSize)})…`
 
-  const { sanitMeta } = await buildSanitizedBundle(files)
+  const { entries: bundleFiles, sanitMeta } = await buildSanitizedBundle(files)
   const bundleName = deriveBundleName(files, htmlFiles)
   const bundleSanit = aggregateSanitMeta(sanitMeta)
   uploadProg.style.width = '25%'
@@ -856,7 +904,6 @@ async function handleFiles(files) {
   showAnalysis(results[0].analysisResult)
   showSandbox(results[0].sanitResult.html)
 
-  const publishFiles = buildPublishBundle(results[0].sanitResult.html)
   const mode = getUploadMode()
 
   if (mode === 'sanitize') {
@@ -864,14 +911,15 @@ async function handleFiles(files) {
       {
         name: bundleName,
         zipName: `${bundleName}_sanitized.zip`,
-        bundleFiles: publishFiles,
+        bundleFiles,
         content: results[0].sanitResult.html,
         sanitResult: bundleSanit,
         htmlResults: results,
       },
     ]
     renderSanitizeDlSection()
-    toast(`🛡️ Bundle sanitized (${files.length} source file(s) → 1 self-contained HTML). Download or submit to GitHub.`)
+    if (activePublishJob?.polling) restorePublishPanelFromJob()
+    toast(`🛡️ Bundle sanitized (${bundleFiles.length} file(s)). Download ZIP or submit to GitHub.`)
     advanceStep(2)
     advanceStep(3)
     // Make sure queue download section is hidden
@@ -882,7 +930,7 @@ async function handleFiles(files) {
       id: 'tool_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
       name: bundleName,
       content: results[0].sanitResult.html,
-      bundleFiles: publishFiles,
+      bundleFiles,
       zipName: `${bundleName}_sanitized.zip`,
       risk: results[0].analysisResult.risk,
       status: 'pending',
@@ -893,7 +941,7 @@ async function handleFiles(files) {
     advanceStep(3)
     refreshQueue()
     refreshToolSelect()
-    toast(`📤 "${bundleName}" added to approval queue (self-contained HTML).`)
+    toast(`📤 "${bundleName}" bundle (${bundleFiles.length} files) added to approval queue.`)
   }
 }
 
@@ -979,7 +1027,7 @@ function sanitizeHTML(html) {
   // 4. Rebuild with CSP
   const headHTML = doc.head ? doc.head.innerHTML : ''
   const bodyHTML = doc.body ? doc.body.innerHTML : ''
-  const out = `<!DOCTYPE html><html><head>\n<meta charset="UTF-8">\n${headHTML}\n<meta http-equiv="Content-Security-Policy" content="default-src 'unsafe-inline' data: blob:; connect-src 'none';">\n</head><body>${bodyHTML}</body></html>`
+  const out = `<!DOCTYPE html><html><head>\n<meta charset="UTF-8">\n${headHTML}\n<meta http-equiv="Content-Security-Policy" content="${TOOL_CSP}">\n</head><body>${bodyHTML}</body></html>`
 
   const log =
     strips === 0
@@ -1184,8 +1232,8 @@ function renderSanitizeDlSection() {
     .join('')
 
   sec.style.display = ''
-  const publishPanel = document.getElementById('publishPanel')
-  if (publishPanel) publishPanel.hidden = false
+  ensurePublishPanelVisible()
+  if (activePublishJob?.polling) restorePublishPanelFromJob()
 }
 
 const INTERNAL_USER_PORTAL_ID = 'internalUser'
@@ -1291,11 +1339,20 @@ async function submitForPublish(idx, category, toolTitle) {
   const toolName = toolNameFromSanitizeItem(item)
   const internalUserId = getInternalUserId()
   const portalCategory = category || 'mall'
+  const fileCount = item.bundleFiles?.length ?? 0
 
-  if (publishLog) {
-    const fileCount = item.bundleFiles?.length ?? 0
-    publishLog.innerHTML = `<span class="log-info">[publish] Opening PR for "${escapeHTML(toolName)}" (${fileCount} file(s), ${escapeHTML(portalCategory.toUpperCase())})…</span>`
+  ensurePublishPanelVisible()
+  const openingLine = `<span class="log-info">[publish] Opening PR for "${escapeHTML(toolName)}" (${fileCount} file(s), ${escapeHTML(portalCategory.toUpperCase())})…</span>`
+  activePublishJob = {
+    jobId: null,
+    polling: true,
+    toolName,
+    logHtml: openingLine,
+    progress: '15%',
+    prShown: false,
+    deployShown: false,
   }
+  setPublishLog(publishLog, openingLine)
   if (prog) prog.style.width = '15%'
 
   try {
@@ -1316,25 +1373,41 @@ async function submitForPublish(idx, category, toolTitle) {
     const { data } = await readJsonResponse(res)
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
 
-    if (publishLog) {
-      publishLog.innerHTML += `<br><span class="log-info">[publish] jobId: ${escapeHTML(data.jobId)}</span>`
-      if (data.warning) {
-        publishLog.innerHTML += `<br><span class="log-warn">[publish] ⚠️ ${escapeHTML(data.warning)}</span>`
-      }
-      if (data.prUrl) {
-        publishLog.innerHTML += `<br><span class="log-ok">[publish] ✅ PR opened: <a href="${data.prUrl}" target="_blank" rel="noopener">Review on GitHub</a></span>`
-        publishLog.dataset.prShown = '1'
-      } else {
-        publishLog.innerHTML += `<br><span class="log-info">[publish] Creating pull request…</span>`
-      }
+    if (activePublishJob) activePublishJob.jobId = data.jobId
+    appendPublishLog(publishLog, `<br><span class="log-info">[publish] jobId: ${escapeHTML(data.jobId)}</span>`)
+    if (data.warning) {
+      appendPublishLog(publishLog, `<br><span class="log-warn">[publish] ⚠️ ${escapeHTML(data.warning)}</span>`)
     }
-    if (prog) prog.style.width = '40%'
+    if (data.prUrl) {
+      appendPublishLog(
+        publishLog,
+        `<br><span class="log-ok">[publish] ✅ PR opened: <a href="${data.prUrl}" target="_blank" rel="noopener">Review on GitHub</a></span>`
+      )
+      if (publishLog) publishLog.dataset.prShown = '1'
+      if (activePublishJob) activePublishJob.prShown = true
+    } else {
+      appendPublishLog(publishLog, `<br><span class="log-info">[publish] Creating pull request…</span>`)
+    }
+    if (prog) {
+      prog.style.width = '40%'
+      if (activePublishJob) activePublishJob.progress = '40%'
+    }
     await pollPublishStatus(data.jobId, publishLog, prog)
   } catch (err) {
-    if (publishLog) {
-      publishLog.innerHTML += `<br><span class="log-err">[publish] ❌ ${escapeHTML(err.message)}</span>`
-    }
+    appendPublishLog(publishLog, `<br><span class="log-err">[publish] ❌ ${escapeHTML(err.message)}</span>`)
+    if (activePublishJob) activePublishJob.polling = false
     toast('❌ Publish failed')
+  }
+}
+
+function finishPublishJob(publishLog, prog, width) {
+  if (activePublishJob) {
+    activePublishJob.polling = false
+    if (publishLog) activePublishJob.logHtml = publishLog.innerHTML
+    if (prog && width) {
+      prog.style.width = width
+      activePublishJob.progress = width
+    }
   }
 }
 
@@ -1349,10 +1422,12 @@ async function pollPublishStatus(jobId, publishLog, prog) {
       attempts++
       if (attempts > maxAttempts) {
         clearInterval(interval)
-        if (publishLog) {
-          const waitedMin = Math.round((maxAttempts * pollIntervalMs) / 60000)
-          publishLog.innerHTML += `<br><span class="log-err">[publish] ❌ Timed out after ${waitedMin} minutes (PR merge + GitHub Pages deploy). Check Actions → Deploy GitHub Pages, then open the live URL manually.</span>`
-        }
+        const waitedMin = Math.round((maxAttempts * pollIntervalMs) / 60000)
+        appendPublishLog(
+          publishLog,
+          `<br><span class="log-err">[publish] ❌ Timed out after ${waitedMin} minutes (PR merge + GitHub Pages deploy). Check Actions → Deploy GitHub Pages, then open the live URL manually.</span>`
+        )
+        finishPublishJob(publishLog, prog)
         reject(new Error('timeout'))
         return
       }
@@ -1364,42 +1439,72 @@ async function pollPublishStatus(jobId, publishLog, prog) {
 
         if (data.status === 'pending') {
           if (publishLog && attempts <= 3) {
-            publishLog.innerHTML += `<br><span class="log-warn">[publish] Waiting for PR… (${Math.round((attempts * pollIntervalMs) / 1000)}s)</span>`
+            appendPublishLog(
+              publishLog,
+              `<br><span class="log-warn">[publish] Waiting for PR… (${Math.round((attempts * pollIntervalMs) / 1000)}s)</span>`
+            )
           }
           return
         }
 
         if (data.status === 'failed') {
           clearInterval(interval)
-          if (publishLog) {
-            publishLog.innerHTML += `<br><span class="log-err">[publish] ❌ ${escapeHTML(data.error || 'Publish failed')}</span>`
-          }
+          appendPublishLog(
+            publishLog,
+            `<br><span class="log-err">[publish] ❌ ${escapeHTML(data.error || 'Publish failed')}</span>`
+          )
+          finishPublishJob(publishLog, prog)
           reject(new Error(data.error || 'publish failed'))
           return
         }
 
         if (data.status === 'pr_open') {
-          if (prog) prog.style.width = Math.min(45 + attempts * 0.5, 80) + '%'
+          const width = Math.min(45 + attempts * 0.5, 80) + '%'
+          if (prog) {
+            prog.style.width = width
+            if (activePublishJob) activePublishJob.progress = width
+          }
           if (data.prUrl && publishLog && !publishLog.dataset.prShown) {
             publishLog.dataset.prShown = '1'
-            publishLog.innerHTML += `<br><span class="log-ok">[publish] ✅ PR opened: <a href="${data.prUrl}" target="_blank" rel="noopener">Review on GitHub</a></span>`
-            publishLog.innerHTML += `<br><span class="log-info">[publish] Merge the PR to deploy — live URL will appear here after Pages deploys (often 3–7 min).</span>`
+            if (activePublishJob) activePublishJob.prShown = true
+            appendPublishLog(
+              publishLog,
+              `<br><span class="log-ok">[publish] ✅ PR opened: <a href="${data.prUrl}" target="_blank" rel="noopener">Review on GitHub</a></span>`
+            )
+            appendPublishLog(
+              publishLog,
+              `<br><span class="log-info">[publish] Merge the PR to deploy — live URL will appear here after Pages deploys (often 3–7 min).</span>`
+            )
           } else if (attempts % 6 === 0 && publishLog) {
-            publishLog.innerHTML += `<br><span class="log-warn">[publish] Awaiting PR merge on GitHub… (${Math.round((attempts * pollIntervalMs) / 1000)}s)</span>`
+            appendPublishLog(
+              publishLog,
+              `<br><span class="log-warn">[publish] Awaiting PR merge on GitHub… (${Math.round((attempts * pollIntervalMs) / 1000)}s)</span>`
+            )
           }
           return
         }
 
         if (data.status === 'deploying') {
-          if (prog) prog.style.width = Math.min(70 + attempts * 0.3, 90) + '%'
+          const width = Math.min(70 + attempts * 0.3, 90) + '%'
+          if (prog) {
+            prog.style.width = width
+            if (activePublishJob) activePublishJob.progress = width
+          }
           if (publishLog && !publishLog.dataset.deployShown) {
             publishLog.dataset.deployShown = '1'
-            publishLog.innerHTML += `<br><span class="log-ok">[publish] ✅ PR merged — GitHub Pages deploying…</span>`
+            if (activePublishJob) activePublishJob.deployShown = true
+            appendPublishLog(publishLog, `<br><span class="log-ok">[publish] ✅ PR merged — GitHub Pages deploying…</span>`)
             if (data.pagesUrl) {
-              publishLog.innerHTML += `<br><span class="log-info">[publish] Live URL (GitHub Pages often takes 3–7 min): <a href="${data.pagesUrl}" target="_blank" rel="noopener">${escapeHTML(data.pagesUrl)}</a></span>`
+              appendPublishLog(
+                publishLog,
+                `<br><span class="log-info">[publish] Live URL (GitHub Pages often takes 3–7 min): <a href="${data.pagesUrl}" target="_blank" rel="noopener">${escapeHTML(data.pagesUrl)}</a></span>`
+              )
             }
           } else if (attempts % 6 === 0 && publishLog) {
-            publishLog.innerHTML += `<br><span class="log-warn">[publish] Waiting for Pages deploy… (${Math.round((attempts * pollIntervalMs) / 1000)}s)</span>`
+            appendPublishLog(
+              publishLog,
+              `<br><span class="log-warn">[publish] Waiting for Pages deploy… (${Math.round((attempts * pollIntervalMs) / 1000)}s)</span>`
+            )
           }
           return
         }
@@ -1407,12 +1512,14 @@ async function pollPublishStatus(jobId, publishLog, prog) {
         if (data.status === 'merged') {
           clearInterval(interval)
           if (prog) prog.style.width = '100%'
-          if (publishLog) {
-            publishLog.innerHTML += `<br><span class="log-ok">[publish] ✅ Live on GitHub Pages!</span>`
-            if (data.pagesUrl) {
-              publishLog.innerHTML += `<br><span class="log-ok">[publish] <a href="${data.pagesUrl}" target="_blank" rel="noopener">Open live tool</a></span>`
-            }
+          appendPublishLog(publishLog, `<br><span class="log-ok">[publish] ✅ Live on GitHub Pages!</span>`)
+          if (data.pagesUrl) {
+            appendPublishLog(
+              publishLog,
+              `<br><span class="log-ok">[publish] <a href="${data.pagesUrl}" target="_blank" rel="noopener">Open live tool</a></span>`
+            )
           }
+          finishPublishJob(publishLog, prog, '100%')
           toast('🌐 Tool published!')
           resolve()
         }

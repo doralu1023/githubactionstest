@@ -1326,6 +1326,10 @@ body.ui-slim .mode-toggle label[for="modeSanitize"] {
   flex-shrink: 0;
 }
 
+.publish-panel[hidden] {
+  display: none !important;
+}
+
 .publish-panel {
   margin-top: var(--space-4);
 }
