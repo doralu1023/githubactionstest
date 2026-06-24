@@ -1,3 +1,16 @@
 .env
 node_modules/
 dist/
+
+# OS / editor
+.DS_Store
+**/.DS_Store
+
+# Local agent / IDE tooling (not app runtime)
+.agents/
+.claude/
+.impeccable.md
+skills-lock.json
+
+# Legacy spike copies
+older version/

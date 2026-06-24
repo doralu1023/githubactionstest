@@ -1,0 +1,68 @@
+name: Build Desktop App
+
+on:
+  workflow_dispatch:
+    inputs:
+      html_base64:
+        description: 'Base64 encoded HTML'
+        required: true
+      tool_name:
+        description: 'Tool name'
+        required: true
+      job_id:
+        description: 'Job ID for callback tracking'
+        required: true
+      callback_url:
+        description: 'Server callback URL'
+        required: true
+
+jobs:
+  build-windows:
+    runs-on: yahoo-enterprise-ubuntu-x86
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: yahoo-core-lang/nodejs-actions/node@v1  # 用 Yahoo 內部的 Node
+        with:
+          node-version: '20'
+
+      - name: Setup Go
+        run: |
+          wget -q https://go.dev/dl/go1.21.linux-amd64.tar.gz
+          sudo tar -C /usr/local -xzf go1.21.linux-amd64.tar.gz
+          echo "/usr/local/go/bin" >> $GITHUB_PATH
+
+      - name: Inject HTML and build .exe
+        run: |
+          TOOL="${{ inputs.tool_name }}"
+          HTML_B64="${{ inputs.html_base64 }}"
+          mkdir -p dist
+          sed "s|__HTML_CONTENT_PLACEHOLDER__|${HTML_B64}|g" \
+            winapp/main.go > temp_main.go
+          GOOS=windows GOARCH=amd64 go build \
+            -ldflags="-H windowsgui" \
+            -o "dist/${TOOL}.exe" \
+            temp_main.go
+
+      - name: Upload .exe as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.tool_name }}-windows
+          path: dist/${{ inputs.tool_name }}.exe
+          retention-days: 7
+
+  notify:
+    needs: [build-windows]
+    runs-on: yahoo-enterprise-ubuntu-x86
+    if: always()
+    steps:
+      - name: Callback to server
+        run: |
+          curl -X POST ${{ inputs.callback_url }} \
+            -H "Content-Type: application/json" \
+            -H "X-Callback-Secret: ${{ secrets.CALLBACK_SECRET }}" \
+            -d '{
+              "jobId": "${{ inputs.job_id }}",
+              "runId": "${{ github.run_id }}",
+              "status": "done"
+            }'

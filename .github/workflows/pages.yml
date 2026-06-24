@@ -1,0 +1,69 @@
+name: Deploy GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'toolbox/**'
+      - 'index.html'
+      - 'main.js'
+      - 'style.css'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Regenerate portal nav (before deploy)
+        env:
+          GITHUB_PAGES_BASE: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+        run: node scripts/update-portal-nav.js --write-registry-for-new
+
+      - name: Prepare site (sandbox UI + published tools)
+        run: |
+          mkdir -p _site
+          cp index.html main.js style.css _site/
+          if [ -d toolbox ]; then cp -r toolbox _site/toolbox; fi
+          if [ -d docs ]; then cp -r docs _site/docs; fi
+          touch _site/.nojekyll
+          echo "Site root:"
+          ls -la _site/
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - uses: actions/deploy-pages@v4
+        id: deployment
+
+      - name: Sync portal nav to main (skip follow-up deploy)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet toolbox/index.html toolbox/registry.json; then
+            echo "Portal nav already up to date in git."
+            exit 0
+          fi
+
+          git add toolbox/index.html toolbox/registry.json
+          git commit -m "chore(portal): sync toolbox nav after Pages deploy [skip ci]"
+          git push

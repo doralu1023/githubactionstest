@@ -1,0 +1,13 @@
+{
+  "baseUrl": "https://doralu1023.github.io/githubactionstest",
+  "tools": {
+    "live-currency-stock-dashboard": {
+      "title": "Live Currency & Stock Dashboard",
+      "category": "auction"
+    },
+    "exmple2": {
+      "title": "Exmple2",
+      "category": "auction"
+    }
+  }
+}
