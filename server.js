@@ -92,8 +92,48 @@ async function triggerPublishWorkflow({ supplierId, toolName, htmlContent, jobId
   };
 }
 
+/** Infer publish progress when the Actions callback never reaches this server. */
+async function tryResolvePendingPublishJob(job) {
+  if (job.pagesUrl && (await isPagesLive(job.pagesUrl))) {
+    return { ...job, status: 'merged' };
+  }
+
+  const since = (job.dispatchedAt || 0) - 15000;
+  if (!job.dispatchedAt || Date.now() - job.dispatchedAt < 8000) {
+    return job;
+  }
+
+  try {
+    const data = await ghGet(
+      `https://api.github.com/repos/${GH_REPO}/actions/workflows/publish.yml/runs?event=workflow_dispatch&per_page=10`
+    );
+    const match = (data.workflow_runs || []).find(
+      (r) => new Date(r.created_at).getTime() >= since
+    );
+    if (!match) return job;
+
+    const actionsUrl = match.html_url;
+    if (match.status !== 'completed') {
+      return { ...job, status: 'pr_open', actionsUrl, prUrl: job.prUrl || actionsUrl };
+    }
+    if (match.conclusion === 'success') {
+      return {
+        ...job,
+        status: 'pr_open',
+        actionsUrl,
+        prUrl: job.prUrl || actionsUrl,
+        runId: match.id,
+      };
+    }
+    return { ...job, status: 'failed', actionsUrl, error: `Workflow: ${match.conclusion}` };
+  } catch (err) {
+    console.error('[PUBLISH-POLL]', err.message);
+    return job;
+  }
+}
+
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'sandbox_v3.html'));
+  res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 // Okta session stub — replace with real OIDC middleware in production
@@ -243,7 +283,13 @@ app.post('/api/publish', async (req, res) => {
   const jobId = `publish-${slugify(toolName)}-${Date.now()}`;
   const pagesUrl = pagesUrlFor(supplierId, toolName);
 
-  publishJobs.set(jobId, { status: 'pending', toolName, supplierId, pagesUrl });
+  publishJobs.set(jobId, {
+    status: 'pending',
+    toolName,
+    supplierId,
+    pagesUrl,
+    dispatchedAt: Date.now(),
+  });
 
   try {
     await triggerPublishWorkflow({
@@ -295,45 +341,58 @@ app.get('/api/publish-status/:jobId', async (req, res) => {
   const job = publishJobs.get(req.params.jobId);
   if (!job) return res.status(404).json({ error: 'Job not found' });
 
-  if (job.status === 'pending') {
-    return res.json({ status: 'pending' });
+  let current = job;
+
+  if (current.status === 'pending') {
+    current = await tryResolvePendingPublishJob(current);
+    if (current.status !== 'pending') {
+      publishJobs.set(req.params.jobId, current);
+    }
+    return res.json({
+      status: current.status,
+      prUrl: current.prUrl,
+      pagesUrl: current.pagesUrl,
+      actionsUrl: current.actionsUrl,
+      error: current.error,
+    });
   }
 
-  if (job.status === 'pr_open' && job.pagesUrl) {
-    const live = await isPagesLive(job.pagesUrl);
+  if (current.status === 'pr_open' && current.pagesUrl) {
+    const live = await isPagesLive(current.pagesUrl);
     if (live) {
-      publishJobs.set(req.params.jobId, { ...job, status: 'merged' });
+      publishJobs.set(req.params.jobId, { ...current, status: 'merged' });
       return res.json({
         status: 'merged',
-        prUrl: job.prUrl,
-        pagesUrl: job.pagesUrl,
+        prUrl: current.prUrl,
+        pagesUrl: current.pagesUrl,
       });
     }
   }
 
-  if (job.prNumber && job.status === 'pr_open') {
+  if (current.prNumber && current.status === 'pr_open') {
     try {
       const pr = await ghGet(
-        `https://api.github.com/repos/${GH_REPO}/pulls/${job.prNumber}`
+        `https://api.github.com/repos/${GH_REPO}/pulls/${current.prNumber}`
       );
       if (pr.merged) {
-        publishJobs.set(req.params.jobId, { ...job, status: 'merged' });
+        publishJobs.set(req.params.jobId, { ...current, status: 'merged' });
         return res.json({
           status: 'merged',
-          prUrl: job.prUrl,
-          pagesUrl: job.pagesUrl,
+          prUrl: current.prUrl,
+          pagesUrl: current.pagesUrl,
         });
       }
     } catch {
-      /* PAT may lack pull_requests:read — fall back to pages HEAD check above */
+      /* PAT may lack pull_requests:read */
     }
   }
 
   res.json({
-    status: job.status,
-    prUrl: job.prUrl,
-    pagesUrl: job.pagesUrl,
-    actionsUrl: job.actionsUrl,
+    status: current.status,
+    prUrl: current.prUrl,
+    pagesUrl: current.pagesUrl,
+    actionsUrl: current.actionsUrl,
+    error: current.error,
   });
 });
 

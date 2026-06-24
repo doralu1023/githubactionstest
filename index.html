@@ -1,0 +1,625 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Tool Sandbox</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <!-- ── TOP NAV ── -->
+    <nav class="topnav">
+      <div class="brand">AI Tool <span>Sandbox</span></div>
+
+      <div class="role-switcher" id="roleSwitcher" hidden>
+        <label for="roleSelect">Role</label>
+        <select id="roleSelect" onchange="switchRole(this.value)">
+          <option value="supplier" selected>Supplier</option>
+          <option value="reviewer">Reviewer</option>
+          <option value="admin">Admin</option>
+          <option value="user">End User</option>
+        </select>
+      </div>
+
+      <div class="user-badge" id="userBadge" hidden>
+        <span class="dot" aria-hidden="true"></span>
+        <span id="currentUserLabel">Loading…</span>
+        <span id="roleBadgeChip" class="role-chip role-chip--supplier">Supplier</span>
+      </div>
+    </nav>
+
+    <!-- ── MAIN PAGE ── -->
+    <main class="page">
+      <!-- Supplier guidelines (always visible in production) -->
+      <section
+        id="supplierGuidelinesBanner"
+        class="supplier-guidelines-banner"
+        aria-labelledby="supplierGuidelinesTitle"
+      >
+        <div class="supplier-guidelines-banner__icon" aria-hidden="true">📋</div>
+        <div class="supplier-guidelines-banner__body">
+          <h2 id="supplierGuidelinesTitle" class="supplier-guidelines-banner__title">
+            AI generation guidelines (Prompt)
+          </h2>
+          <p class="supplier-guidelines-banner__lede">
+            Before generating or packaging tools, align outputs with our sanitize rules and use the
+            prompt template for AI agents. Advise use English only in the template to prevent
+            generatingissues. If a sandbox check fails, paste fix-prompt-v1.md into your AI agent to
+            regenerate a compliant version.
+          </p>
+          <ul class="supplier-guidelines-banner__links">
+            <li>
+              <a href="./docs/supplier-skills/sanitize-rules-v1.md" target="_blank" rel="noopener"
+                >sanitize-rules-v1.md</a
+              >
+              — hard requirements (reject if violated)
+            </li>
+            <li>
+              <a href="./docs/supplier-skills/prompt-template-v1.md" target="_blank" rel="noopener"
+                >prompt-template-v1.md</a
+              >
+              — template example prompt for AI
+            </li>
+            <li>
+              <a href="./docs/supplier-skills/fix-prompt-v1.md" target="_blank" rel="noopener"
+                >fix-prompt-v1.md</a
+              >
+              — paste-in prompt to fix a tool that failed sanitization
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- Step Tracker -->
+      <div
+        class="steps"
+        id="stepPills"
+        role="list"
+        aria-label="Workflow progress"
+        data-ui-full-only
+      >
+        <div class="step active" id="step1" role="listitem">
+          <span class="num" aria-hidden="true">1</span>Upload
+        </div>
+        <div class="step" id="step2" role="listitem">
+          <span class="num" aria-hidden="true">2</span>Sanitize
+        </div>
+        <div class="step" id="step3" role="listitem">
+          <span class="num" aria-hidden="true">3</span>Preview
+        </div>
+        <div class="step" id="step4" role="listitem">
+          <span class="num" aria-hidden="true">4</span>Approve
+        </div>
+        <div class="step" id="step5" role="listitem">
+          <span class="num" aria-hidden="true">5</span>Package
+        </div>
+        <div class="step" id="step6" role="listitem">
+          <span class="num" aria-hidden="true">6</span>Distribute
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <!-- ── LEFT COLUMN ── -->
+        <div class="stack col-pipeline">
+          <h2 class="workflow-lane-heading">Prepare &amp; inspect</h2>
+
+          <!-- Upload Card -->
+          <div class="card card--ingest" id="uploadCard">
+            <div class="card-header">
+              <span class="card-kicker" aria-hidden="true">Ingest</span>
+              <span class="icon" aria-hidden="true">📤</span>
+              <span class="card-heading">Upload Tool</span>
+            </div>
+            <div class="card-body">
+              <div
+                id="roleNotice-upload"
+                class="info-box"
+                style="margin-bottom: var(--space-4)"
+              ></div>
+
+              <!-- Upload Mode -->
+              <div id="uploadModeWrap">
+                <p class="section-title">Upload mode</p>
+                <div class="mode-toggle" role="group" aria-label="Choose upload mode">
+                  <input
+                    type="radio"
+                    name="uploadMode"
+                    id="modeSanitize"
+                    value="sanitize"
+                    checked
+                  />
+                  <label for="modeSanitize">🛡 Sanitize &amp; Download</label>
+                  <input
+                    type="radio"
+                    name="uploadMode"
+                    id="modeSystem"
+                    value="system"
+                    data-ui-full-only
+                  />
+                  <label for="modeSystem" data-ui-full-only>🚀 Submit to System</label>
+                </div>
+                <div
+                  id="modeDescription"
+                  class="info-box"
+                  style="margin-bottom: var(--space-4); font-size: 0.75rem"
+                >
+                  <strong>Sanitize &amp; Download:</strong> Files are cleaned locally and returned
+                  to you immediately. Nothing is submitted to the approval queue.
+                </div>
+              </div>
+
+              <!-- Dual upload buttons -->
+              <div class="upload-drop-zone" id="uploadZone">
+                <div class="upload-btn-row">
+                  <label class="upload-btn-label" id="folderBtnLabel">
+                    <span aria-hidden="true">📁</span> Select Folder
+                    <input
+                      type="file"
+                      id="fileInputFolder"
+                      accept=".html,.htm,.css,.js,.png,.jpg,.jpeg,.gif,.svg,.webp,.pdf,.txt,.json"
+                      webkitdirectory
+                      multiple
+                      aria-label="Select a folder to upload"
+                    />
+                  </label>
+                  <label class="upload-btn-label" id="fileBtnLabel">
+                    <span aria-hidden="true">📄</span> Select Files
+                    <input
+                      type="file"
+                      id="fileInputFile"
+                      accept=".html,.htm,.css,.js,.png,.jpg,.jpeg,.gif,.svg,.webp,.pdf,.txt,.json"
+                      multiple
+                      aria-label="Select individual files to upload"
+                    />
+                  </label>
+                </div>
+                <small
+                  >HTML + supporting assets (images, PDF, CSS) · Folder or multi-select · 10 MB
+                  limit</small
+                >
+              </div>
+
+              <div class="progress-bar" style="margin-top: var(--space-3)">
+                <div class="fill" id="uploadProgress"></div>
+              </div>
+              <div
+                id="uploadStatus"
+                style="font-size: 0.72rem; color: var(--text-3); margin-top: var(--space-2)"
+              ></div>
+              <div class="file-list-preview" id="fileListPreview" aria-live="polite"></div>
+
+              <!-- Sanitize-only download list -->
+              <div id="sanitDlSection" style="display: none">
+                <hr class="divider" />
+                <p class="section-title">Ready to download</p>
+                <div class="sanit-dl-list" id="sanitDlList"></div>
+                <div id="publishPanel" class="publish-panel" hidden>
+                  <hr class="divider" />
+                  <p class="section-title">GitHub publish</p>
+                  <p class="publish-panel__lede">
+                    Opens a pull request under
+                    <code>tools/&lt;supplier&gt;/&lt;tool&gt;/</code>. Merge on GitHub to deploy
+                    via Pages.
+                  </p>
+                  <div class="log-box" id="publishLog" aria-live="polite">
+                    <span class="log-info">[publish] Submit a sanitized tool to begin…</span>
+                  </div>
+                  <div class="progress-bar" style="margin-top: var(--space-3)">
+                    <div class="fill" id="publishProgress"></div>
+                  </div>
+                </div>
+                <div class="info-box" style="margin-top: var(--space-3); font-size: 0.73rem">
+                  Files were sanitized entirely in your browser. No data left your device.
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Sanitizer Card -->
+          <div class="card card--protect" id="sanitizeCard">
+            <div class="card-header">
+              <span class="card-kicker" aria-hidden="true">Clean</span>
+              <div class="card-header-row">
+                <span class="icon" aria-hidden="true">🛡️</span>
+                <span class="card-heading">Sanitizer</span>
+                <span id="sanitizePill"></span>
+              </div>
+            </div>
+            <div class="card-body">
+              <p
+                style="
+                  font-size: 0.76rem;
+                  color: var(--text-2);
+                  line-height: 1.7;
+                  margin-bottom: var(--space-3);
+                "
+              >
+                Uploaded HTML is sanitized before storage or preview. Dangerous tags, inline event
+                handlers, and unsafe URL schemes are stripped automatically. JavaScript (.js and
+                inline &lt;script&gt;) is inspected and the upload is rejected if violations are
+                found.
+              </p>
+
+              <!-- Multi-file tabs (shown when >1 HTML) -->
+              <div id="sanitTabStrip" class="file-tabs" style="display: none" role="tablist"></div>
+              <div id="sanitTabPanels"></div>
+
+              <!-- Single-file view -->
+              <div id="sanitSingleWrap">
+                <div id="sanitizeLog" class="log-box" aria-live="polite">
+                  <span class="log-info">[sanitizer] Waiting for upload…</span>
+                </div>
+                <div id="sanitizeReport" class="sanit-report" style="display: none">
+                  <div class="sanit-report-header">
+                    <span>Sanitization Report</span>
+                    <span
+                      id="sanitReportSummary"
+                      style="color: var(--text-3); font-weight: 400"
+                    ></span>
+                  </div>
+                  <table class="sanit-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">Element / Attribute</th>
+                        <th scope="col">Action</th>
+                        <th scope="col">Reason</th>
+                        <th scope="col">Location</th>
+                      </tr>
+                    </thead>
+                    <tbody id="sanitReportBody"></tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div
+                id="sanitizeSummary"
+                style="margin-top: var(--space-3); font-size: 0.73rem; color: var(--text-3)"
+              >
+                No files sanitized yet.
+              </div>
+
+              <div
+                id="fixPromptCallout"
+                class="info-box warn"
+                style="display: none; margin-top: var(--space-3); font-size: 0.76rem"
+              ></div>
+            </div>
+          </div>
+
+          <!-- Security Analysis Card -->
+          <div class="card card--inspect" id="securityCard">
+            <div class="card-header">
+              <span class="card-kicker" aria-hidden="true">Scan</span>
+              <span class="icon" aria-hidden="true">🔍</span>
+              <span class="card-heading">Security Analysis</span>
+            </div>
+            <div class="card-body">
+              <div class="analysis-grid">
+                <div class="check-item idle" id="chk-size">
+                  <span class="ci-icon" aria-hidden="true">📦</span>
+                  <div><span class="ci-label">File Size</span><span class="ci-val">—</span></div>
+                </div>
+                <div class="check-item idle" id="chk-mime">
+                  <span class="ci-icon" aria-hidden="true">🏷️</span>
+                  <div><span class="ci-label">DOCTYPE</span><span class="ci-val">—</span></div>
+                </div>
+                <div class="check-item idle" id="chk-ext">
+                  <span class="ci-icon" aria-hidden="true">🔗</span>
+                  <div>
+                    <span class="ci-label">External Scripts</span><span class="ci-val">—</span>
+                  </div>
+                </div>
+                <div class="check-item idle" id="chk-eval">
+                  <span class="ci-icon" aria-hidden="true">⚡</span>
+                  <div>
+                    <span class="ci-label">Unsafe Patterns</span><span class="ci-val">—</span>
+                  </div>
+                </div>
+                <div class="check-item idle" id="chk-cookie">
+                  <span class="ci-icon" aria-hidden="true">🍪</span>
+                  <div>
+                    <span class="ci-label">Storage Access</span><span class="ci-val">—</span>
+                  </div>
+                </div>
+                <div class="check-item idle" id="chk-escape">
+                  <span class="ci-icon" aria-hidden="true">🚪</span>
+                  <div><span class="ci-label">Frame Escape</span><span class="ci-val">—</span></div>
+                </div>
+              </div>
+
+              <div class="log-box" id="analysisLog" aria-live="polite">
+                <span class="log-info">[analysis] Upload a file to begin…</span>
+              </div>
+
+              <div class="flex-end" style="margin-top: var(--space-4)">
+                <button
+                  class="btn btn-ghost btn-sm"
+                  id="runAnalysisBtn"
+                  disabled
+                  onclick="runAnalysis()"
+                >
+                  Re-run Analysis
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- /left col -->
+
+        <!-- ── RIGHT COLUMN ── -->
+        <div class="stack col-review">
+          <h2 class="workflow-lane-heading" id="reviewLaneHeading">Review &amp; approve</h2>
+
+          <!-- Sandbox Preview Card -->
+          <div class="card preview-card card--preview">
+            <div class="card-header">
+              <span class="card-kicker" aria-hidden="true">Run</span>
+              <span class="icon" aria-hidden="true">🖥️</span>
+              <span class="card-heading">Preview</span>
+            </div>
+            <div class="card-body">
+              <p class="preview-lede" id="previewLede">
+                Tools render inside a locked-down frame: no network, no access to this page or your
+                session.
+              </p>
+              <div
+                class="sandbox-wrap"
+                role="region"
+                aria-labelledby="previewRegionLabel"
+                aria-describedby="previewLede"
+              >
+                <p id="previewRegionLabel" class="visually-hidden">Isolated tool preview</p>
+                <div class="sandbox-chrome">
+                  <div class="sandbox-toolbar" aria-hidden="true">
+                    <span class="sb-traffic" title="Decorative window controls" aria-hidden="true">
+                      <span class="sb-dot red"></span>
+                      <span class="sb-dot yellow"></span>
+                      <span class="sb-dot green"></span>
+                    </span>
+                    <span class="sb-url" translate="no">sandbox://isolated/preview</span>
+                    <span class="sb-badge"
+                      ><span class="sb-lock" aria-hidden="true">🔒</span> Isolated</span
+                    >
+                  </div>
+                  <div id="sandboxPlaceholder" class="sandbox-placeholder">
+                    <div class="sandbox-empty-frame" aria-hidden="true"></div>
+                    <h2 class="sandbox-empty-title">Ready when you are</h2>
+                    <p class="sandbox-empty-desc">
+                      Upload HTML from the left. After sanitization, the live preview replaces this
+                      panel so you can verify behavior before approval.
+                    </p>
+                    <ul class="sandbox-empty-hints">
+                      <li>Scripts run only inside the frame</li>
+                      <li>
+                        No outbound requests (<code class="sandbox-code">connect-src 'none'</code>)
+                      </li>
+                    </ul>
+                  </div>
+                  <iframe
+                    id="sandboxFrame"
+                    class="sandbox-frame"
+                    style="display: none"
+                    sandbox="allow-scripts allow-forms allow-modals"
+                    referrerpolicy="no-referrer"
+                    title="Sandboxed tool preview"
+                  ></iframe>
+                </div>
+              </div>
+              <div class="info-box preview-footnote">
+                <strong>How it stays safe:</strong>
+                CSP enforces <code>connect-src 'none'</code>. The iframe cannot phone home, read
+                parent DOM, or use your cookies.
+              </div>
+            </div>
+          </div>
+
+          <!-- Approval Queue -->
+          <div class="card card--approve" id="approvalCard">
+            <div class="card-header">
+              <span class="card-kicker" aria-hidden="true">Gate</span>
+              <span class="icon" aria-hidden="true">✅</span>
+              <span class="card-heading">Approval Queue</span>
+            </div>
+            <div class="card-body">
+              <div
+                id="roleNotice-approve"
+                class="info-box"
+                style="margin-bottom: var(--space-4)"
+              ></div>
+              <table class="tbl">
+                <thead>
+                  <tr>
+                    <th scope="col">File</th>
+                    <th scope="col">Submitted by</th>
+                    <th scope="col">Risk</th>
+                    <th scope="col">Status</th>
+                    <th scope="col">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="queueBody">
+                  <tr>
+                    <td
+                      colspan="5"
+                      style="text-align: center; color: var(--text-3); padding: var(--space-6)"
+                    >
+                      No tools submitted yet
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <!-- /right col -->
+      </div>
+      <!-- /grid-2 -->
+
+      <!-- ── PACKAGING CARD (full width) ── -->
+      <div class="card card--ship" id="packageCard" data-ui-package>
+        <div class="card-header">
+          <span class="card-kicker" aria-hidden="true">Ship</span>
+          <span class="icon" aria-hidden="true">📦</span>
+          <span class="card-heading">Package as Desktop App</span>
+        </div>
+        <div class="card-body">
+          <div
+            id="roleNotice-download"
+            class="info-box"
+            style="margin-bottom: var(--space-5)"
+          ></div>
+
+          <p class="section-title">What gets built</p>
+          <div class="analysis-grid" style="margin-bottom: var(--space-5)">
+            <div class="check-item pass">
+              <span class="ci-icon" aria-hidden="true">⚡</span>
+              <div>
+                <span class="ci-label">Zero Install</span
+                ><span class="ci-val">Double-click to run</span>
+              </div>
+            </div>
+            <div class="check-item pass">
+              <span class="ci-icon" aria-hidden="true">🌐</span>
+              <div>
+                <span class="ci-label">Fully Offline</span
+                ><span class="ci-val">All assets bundled</span>
+              </div>
+            </div>
+            <div class="check-item pass">
+              <span class="ci-icon" aria-hidden="true">🔒</span>
+              <div>
+                <span class="ci-label">No URL Bar</span><span class="ci-val">Path not exposed</span>
+              </div>
+            </div>
+            <div class="check-item pass">
+              <span class="ci-icon" aria-hidden="true">◀▶</span>
+              <div>
+                <span class="ci-label">Nav Only</span
+                ><span class="ci-val">Back / Forward only</span>
+              </div>
+            </div>
+          </div>
+
+          <hr class="divider" />
+          <p class="section-title">Build an approved tool</p>
+          <div class="gap-8" style="margin-bottom: var(--space-4)" id="buildBtnWrap">
+            <select id="toolSelect" disabled aria-label="Select an approved tool to build">
+              <option value="">— No approved tools yet —</option>
+            </select>
+            <button class="btn btn-red" id="buildBtn" disabled onclick="buildPackage()">
+              Build .app + .exe
+            </button>
+          </div>
+
+          <div id="userToolList" style="display: none; margin-bottom: var(--space-4)"></div>
+
+          <div class="log-box" id="buildLog" aria-live="polite">
+            <span class="log-info">[packager] Select an approved tool to begin…</span>
+          </div>
+          <div class="progress-bar"><div class="fill" id="buildProgress"></div></div>
+
+          <div class="dl-panel" id="dlPanel" style="display: none">
+            <div class="dl-card">
+              <div class="dl-os" aria-hidden="true">🍎</div>
+              <div class="dl-name">macOS</div>
+              <div class="dl-meta">.app bundle · WKWebView<br />macOS 10.15+</div>
+              <button class="btn btn-ghost" onclick="downloadApp('mac')">Download .app</button>
+              <div class="dl-token" id="dlMacToken"></div>
+            </div>
+            <div class="dl-card">
+              <div class="dl-os" aria-hidden="true">🪟</div>
+              <div class="dl-name">Windows</div>
+              <div class="dl-meta">.exe binary · Edge App Mode<br />Windows 10 / 11</div>
+              <button class="btn btn-ghost" onclick="downloadApp('win')">Download .exe</button>
+              <div class="dl-token" id="dlWinToken"></div>
+            </div>
+          </div>
+
+          <div class="info-box warn" style="margin-top: var(--space-4)">
+            <strong>Demo mode:</strong> In production, the server compiles real binaries via CI. The
+            HTML source is never exposed to end users.
+          </div>
+        </div>
+      </div>
+
+      <!-- ── SECURITY ARCHITECTURE ── -->
+      <div class="card card--arch" id="archCard" data-ui-full-only>
+        <div class="card-header">
+          <span class="card-kicker" aria-hidden="true">Map</span>
+          <span class="icon" aria-hidden="true">🏛️</span>
+          <span class="card-heading">Security Architecture</span>
+        </div>
+        <div class="card-body">
+          <div class="arch-grid">
+            <div class="arch-group">
+              <p class="section-title">Upload</p>
+              <ul class="arch-list">
+                <li>HTML + assets (images, PDF, CSS, JS)</li>
+                <li>10 MB total bundle limit</li>
+                <li>Assets inlined as data URLs before sanitization</li>
+                <li>Filename sanitized — no path traversal</li>
+              </ul>
+            </div>
+            <div class="arch-group">
+              <p class="section-title">XSS / Injection</p>
+              <ul class="arch-list">
+                <li>External <code>&lt;script src&gt;</code> detected and flagged</li>
+                <li>
+                  <code>eval()</code>, <code>Function()</code>, <code>setTimeout(str)</code> flagged
+                </li>
+                <li>All <code>on*</code> inline handlers stripped</li>
+                <li><code>javascript:</code> and <code>vbscript:</code> URLs stripped</li>
+                <li><code>connect-src 'none'</code> — no outbound requests</li>
+              </ul>
+            </div>
+            <div class="arch-group">
+              <p class="section-title">Sandbox Isolation</p>
+              <ul class="arch-list">
+                <li><code>allow-scripts</code> only — no <code>allow-same-origin</code></li>
+                <li>No access to parent DOM or cookies</li>
+                <li><code>referrerpolicy="no-referrer"</code></li>
+                <li>Preview via Blob URL — real path not exposed</li>
+              </ul>
+            </div>
+            <div class="arch-group">
+              <p class="section-title">Distribution</p>
+              <ul class="arch-list">
+                <li>Signed token URL, expires in 15 min</li>
+                <li>RBAC — approved roles only can download</li>
+                <li>HTML source never exposed in the binary</li>
+                <li>Audit log on every approval and download</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+    <!-- /page -->
+
+    <!-- ── APPROVAL MODAL ── -->
+    <div
+      class="modal-overlay"
+      id="approveModal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="modalTitle"
+    >
+      <div class="modal">
+        <h3 id="modalTitle">Review Tool</h3>
+        <p id="modalMsg">Review the sandbox preview and security analysis before approving.</p>
+        <div class="info-box warn" style="margin-top: var(--space-3)">
+          Approving confirms this tool is safe to distribute to end users.
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+          <button class="btn btn-orange btn-sm" onclick="rejectTool()">Reject Tool</button>
+          <button class="btn btn-green" onclick="approveTool()">Approve Tool</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── TOAST ── -->
+    <div id="toast" role="status" aria-live="polite"></div>
+
+    <script src="main.js"></script>
+  </body>
+</html>

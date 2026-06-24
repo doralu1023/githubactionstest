@@ -1039,7 +1039,21 @@ async function pollPublishStatus(jobId, publishLog, prog) {
         if (data.status === 'pending') {
           if (publishLog && attempts <= 3) {
             publishLog.innerHTML += `<br><span class="log-warn">[publish] GitHub Actions running… (${attempts * 5}s)</span>`
+          } else if (publishLog && attempts === 6) {
+            publishLog.innerHTML += `<br><span class="log-info">[publish] Still waiting… checking workflow &amp; Pages.</span>`
           }
+          return
+        }
+
+        if (data.status === 'failed') {
+          clearInterval(interval)
+          if (publishLog) {
+            publishLog.innerHTML += `<br><span class="log-err">[publish] ❌ ${escapeHTML(data.error || 'Workflow failed')}</span>`
+            if (data.actionsUrl) {
+              publishLog.innerHTML += `<br><span class="log-info">[publish] <a href="${data.actionsUrl}" target="_blank" rel="noopener">View workflow run</a></span>`
+            }
+          }
+          reject(new Error(data.error || 'workflow failed'))
           return
         }
 
