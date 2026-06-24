@@ -3,6 +3,11 @@ name: Deploy GitHub Pages
 on:
   push:
     branches: [main]
+    paths:
+      - 'tools/**'
+      - 'index.html'
+      - 'main.js'
+      - 'style.css'
   workflow_dispatch:
 
 permissions:
@@ -23,11 +28,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Prepare site (tools/ only)
+      - name: Prepare site (sandbox UI + published tools)
         run: |
           mkdir -p _site/tools
+          cp index.html main.js style.css _site/
           if [ -d tools ]; then cp -r tools/* _site/tools/; fi
+          if [ -d docs ]; then cp -r docs _site/docs; fi
           touch _site/.nojekyll
+          echo "Site root:"
+          ls -la _site/
 
       - uses: actions/configure-pages@v5
 

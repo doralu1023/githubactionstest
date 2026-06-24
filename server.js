@@ -180,10 +180,6 @@ async function triggerPublishWorkflow({ supplierId, toolName, files, jobId }, re
 
 /** Infer publish progress when the Actions callback never reaches this server. */
 async function tryResolvePendingPublishJob(job) {
-  if (job.pagesUrl && (await isPagesLive(job.pagesUrl))) {
-    return { ...job, status: 'merged' };
-  }
-
   const since = (job.dispatchedAt || 0) - 15000;
   if (!job.dispatchedAt || Date.now() - job.dispatchedAt < 8000) {
     return job;
@@ -452,7 +448,21 @@ app.get('/api/publish-status/:jobId', async (req, res) => {
     });
   }
 
-  if (current.status === 'pr_open' && current.pagesUrl) {
+  if (current.status === 'pr_open' && current.prNumber) {
+    try {
+      const pr = await ghGet(
+        `https://api.github.com/repos/${GH_REPO}/pulls/${current.prNumber}`
+      );
+      if (pr.merged) {
+        publishJobs.set(req.params.jobId, { ...current, status: 'deploying' });
+        current = { ...current, status: 'deploying' };
+      }
+    } catch {
+      /* PAT may lack pull_requests:read */
+    }
+  }
+
+  if (current.status === 'deploying' && current.pagesUrl) {
     const live = await isPagesLive(current.pagesUrl);
     if (live) {
       publishJobs.set(req.params.jobId, { ...current, status: 'merged' });
@@ -462,23 +472,25 @@ app.get('/api/publish-status/:jobId', async (req, res) => {
         pagesUrl: current.pagesUrl,
       });
     }
+    return res.json({
+      status: 'deploying',
+      prUrl: current.prUrl,
+      pagesUrl: current.pagesUrl,
+      actionsUrl: current.actionsUrl,
+      message: 'PR merged — waiting for GitHub Pages deploy',
+    });
   }
 
-  if (current.prNumber && current.status === 'pr_open') {
-    try {
-      const pr = await ghGet(
-        `https://api.github.com/repos/${GH_REPO}/pulls/${current.prNumber}`
-      );
-      if (pr.merged) {
-        publishJobs.set(req.params.jobId, { ...current, status: 'merged' });
-        return res.json({
-          status: 'merged',
-          prUrl: current.prUrl,
-          pagesUrl: current.pagesUrl,
-        });
-      }
-    } catch {
-      /* PAT may lack pull_requests:read */
+  if (current.status === 'pr_open' && !current.prNumber && current.pagesUrl) {
+    // Compare-URL fallback (no PR number): only treat as live after explicit Pages check.
+    const live = await isPagesLive(current.pagesUrl);
+    if (live) {
+      publishJobs.set(req.params.jobId, { ...current, status: 'merged' });
+      return res.json({
+        status: 'merged',
+        prUrl: current.prUrl,
+        pagesUrl: current.pagesUrl,
+      });
     }
   }
 

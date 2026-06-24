@@ -1219,9 +1219,9 @@ async function submitForPublish(idx) {
       if (data.warning) {
         publishLog.innerHTML += `<br><span class="log-warn">[publish] ⚠️ ${escapeHTML(data.warning)}</span>`
       }
-      publishLog.innerHTML += `<br><span class="log-info">[publish] Workflow started — waiting for PR link…</span>`
+      publishLog.innerHTML += `<br><span class="log-info">[publish] Publish workflow started — creating PR (not Pages deploy yet)…</span>`
       if (data.pagesUrl) {
-        publishLog.innerHTML += `<br><span class="log-info">[publish] After merge: <a href="${data.pagesUrl}" target="_blank" rel="noopener">${escapeHTML(data.pagesUrl)}</a></span>`
+        publishLog.innerHTML += `<br><span class="log-info">[publish] Live URL after merge: <a href="${data.pagesUrl}" target="_blank" rel="noopener">${escapeHTML(data.pagesUrl)}</a></span>`
       }
     }
     if (prog) prog.style.width = '40%'
@@ -1257,9 +1257,9 @@ async function pollPublishStatus(jobId, publishLog, prog) {
 
         if (data.status === 'pending') {
           if (publishLog && attempts <= 3) {
-            publishLog.innerHTML += `<br><span class="log-warn">[publish] GitHub Actions running… (${attempts * 5}s)</span>`
+            publishLog.innerHTML += `<br><span class="log-warn">[publish] Publish workflow running — opening PR… (${attempts * 5}s)</span>`
           } else if (publishLog && attempts === 6) {
-            publishLog.innerHTML += `<br><span class="log-info">[publish] Still waiting… checking workflow &amp; Pages.</span>`
+            publishLog.innerHTML += `<br><span class="log-info">[publish] Still waiting for PR link from publish workflow…</span>`
           }
           return
         }
@@ -1282,10 +1282,22 @@ async function pollPublishStatus(jobId, publishLog, prog) {
             publishLog.dataset.prShown = '1'
             publishLog.innerHTML += `<br><span class="log-ok">[publish] ✅ PR opened: <a href="${data.prUrl}" target="_blank" rel="noopener">Review on GitHub</a></span>`
             if (data.actionsUrl) {
-              publishLog.innerHTML += `<br><span class="log-info">[publish] <a href="${data.actionsUrl}" target="_blank" rel="noopener">View workflow run</a></span>`
+              publishLog.innerHTML += `<br><span class="log-info">[publish] <a href="${data.actionsUrl}" target="_blank" rel="noopener">View publish workflow</a> (not Pages deploy)</span>`
             }
           } else if (attempts % 6 === 0 && publishLog) {
-            publishLog.innerHTML += `<br><span class="log-warn">[publish] Awaiting merge on GitHub… (${attempts * 5}s)</span>`
+            publishLog.innerHTML += `<br><span class="log-warn">[publish] Awaiting PR merge on GitHub… (${attempts * 5}s)</span>`
+          }
+          return
+        }
+
+        if (data.status === 'deploying') {
+          if (prog) prog.style.width = Math.min(70 + attempts * 0.3, 90) + '%'
+          if (publishLog && !publishLog.dataset.deployShown) {
+            publishLog.dataset.deployShown = '1'
+            publishLog.innerHTML += `<br><span class="log-ok">[publish] ✅ PR merged — GitHub Pages deploying…</span>`
+            publishLog.innerHTML += `<br><span class="log-info">[publish] Check the &quot;Deploy GitHub Pages&quot; workflow on Actions tab.</span>`
+          } else if (attempts % 6 === 0 && publishLog) {
+            publishLog.innerHTML += `<br><span class="log-warn">[publish] Waiting for Pages deploy… (${attempts * 5}s)</span>`
           }
           return
         }
@@ -1294,7 +1306,7 @@ async function pollPublishStatus(jobId, publishLog, prog) {
           clearInterval(interval)
           if (prog) prog.style.width = '100%'
           if (publishLog) {
-            publishLog.innerHTML += `<br><span class="log-ok">[publish] ✅ Merged &amp; published!</span>`
+            publishLog.innerHTML += `<br><span class="log-ok">[publish] ✅ Live on GitHub Pages!</span>`
             if (data.pagesUrl) {
               publishLog.innerHTML += `<br><span class="log-ok">[publish] <a href="${data.pagesUrl}" target="_blank" rel="noopener">Open live tool</a></span>`
             }
