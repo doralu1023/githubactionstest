@@ -732,33 +732,68 @@ async function buildSanitizedBundle(files) {
 
 async function buildAssetMap(assetFiles) {
   const map = {}
+  const pending = []
+
   await Promise.all(
     assetFiles.map(async (f) => {
-      const ext = f.name.split('.').pop().toLowerCase()
+      const path = normalizeUploadPath(f)
+      const ext = path.split('.').pop().toLowerCase()
       const mime = MIME_MAP[ext] || 'application/octet-stream'
       const isText = ['css', 'js', 'txt', 'json', 'svg'].includes(ext)
       let dataUrl
       if (isText) {
-        const text = await readAsText(f)
+        let text = await readAsText(f)
+        if (ext === 'js') {
+          text = sanitizeJS(text, path).code
+          text = text.replace(/\/\/[#@]\s*sourceMappingURL=.*/gm, '')
+        }
         dataUrl = `data:${mime};charset=utf-8,${encodeURIComponent(text)}`
       } else {
         dataUrl = await readAsDataURL(f)
       }
-      // Store by full path AND basename so both relative forms resolve
-      map[f.name] = dataUrl
-      map[f.name.split('/').pop()] = dataUrl
+      pending.push({ path, dataUrl })
     })
   )
+
+  const normalizedPaths = normalizeBundlePaths(pending.map((p) => ({ path: p.path, content: '' })))
+  pending.forEach((p, i) => {
+    const keys = new Set([
+      p.path,
+      normalizedPaths[i].path,
+      p.path.replace(/^\.\//, ''),
+      normalizedPaths[i].path.replace(/^\.\//, ''),
+      p.path.split('/').pop(),
+      normalizedPaths[i].path.split('/').pop(),
+    ])
+    keys.forEach((key) => {
+      if (key) map[key] = p.dataUrl
+    })
+  })
+
   return map
 }
 
 function inlineAssets(html, assetMap) {
   return html.replace(/(src|href)=["']([^"'#?:][^"']*?)["']/gi, (match, attr, path) => {
-    const basename = path.split('/').pop()
-    if (assetMap[path]) return `${attr}="${assetMap[path]}"`
-    if (assetMap[basename]) return `${attr}="${assetMap[basename]}"`
+    const candidates = [
+      path,
+      path.replace(/^\.\//, ''),
+      path.split('/').pop(),
+    ]
+    for (const key of candidates) {
+      if (assetMap[key]) return `${attr}="${assetMap[key]}"`
+    }
     return match
   })
+}
+
+/**
+ * CSP-safe publish artifact: one self-contained index.html (assets inlined as data: URLs).
+ * @param {string} sanitizedInlinedHtml
+ * @returns {{ path: string, content: string }[]}
+ */
+function buildPublishBundle(sanitizedInlinedHtml) {
+  return [{ path: 'index.html', content: sanitizedInlinedHtml }]
 }
 
 /* ════════════════════════════════════════════════
@@ -789,7 +824,7 @@ async function handleFiles(files) {
   uploadProg.style.width = '10%'
   uploadStat.textContent = `Processing ${files.length} file(s) (${formatFileSize(totalSize)})…`
 
-  const { entries: bundleFiles, sanitMeta } = await buildSanitizedBundle(files)
+  const { sanitMeta } = await buildSanitizedBundle(files)
   const bundleName = deriveBundleName(files, htmlFiles)
   const bundleSanit = aggregateSanitMeta(sanitMeta)
   uploadProg.style.width = '25%'
@@ -821,6 +856,7 @@ async function handleFiles(files) {
   showAnalysis(results[0].analysisResult)
   showSandbox(results[0].sanitResult.html)
 
+  const publishFiles = buildPublishBundle(results[0].sanitResult.html)
   const mode = getUploadMode()
 
   if (mode === 'sanitize') {
@@ -828,14 +864,14 @@ async function handleFiles(files) {
       {
         name: bundleName,
         zipName: `${bundleName}_sanitized.zip`,
-        bundleFiles,
+        bundleFiles: publishFiles,
         content: results[0].sanitResult.html,
         sanitResult: bundleSanit,
         htmlResults: results,
       },
     ]
     renderSanitizeDlSection()
-    toast(`🛡️ Bundle sanitized (${bundleFiles.length} files). Download ZIP or submit to GitHub.`)
+    toast(`🛡️ Bundle sanitized (${files.length} source file(s) → 1 self-contained HTML). Download or submit to GitHub.`)
     advanceStep(2)
     advanceStep(3)
     // Make sure queue download section is hidden
@@ -846,7 +882,7 @@ async function handleFiles(files) {
       id: 'tool_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
       name: bundleName,
       content: results[0].sanitResult.html,
-      bundleFiles,
+      bundleFiles: publishFiles,
       zipName: `${bundleName}_sanitized.zip`,
       risk: results[0].analysisResult.risk,
       status: 'pending',
@@ -857,7 +893,7 @@ async function handleFiles(files) {
     advanceStep(3)
     refreshQueue()
     refreshToolSelect()
-    toast(`📤 "${bundleName}" bundle (${bundleFiles.length} files) added to approval queue.`)
+    toast(`📤 "${bundleName}" added to approval queue (self-contained HTML).`)
   }
 }
 
