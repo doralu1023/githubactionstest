@@ -1,0 +1,80 @@
+name: Publish Tool to GitHub Pages
+
+on:
+  workflow_dispatch:
+    inputs:
+      supplier_id:
+        description: 'Supplier slug (tools/<supplier_id>/...)'
+        required: true
+      tool_name:
+        description: 'Tool slug'
+        required: true
+      html_base64:
+        description: 'Base64-encoded sanitized index.html'
+        required: true
+      job_id:
+        description: 'Server job ID for callback'
+        required: true
+      callback_url:
+        description: 'Server callback URL'
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write sanitized tool
+        run: |
+          PREFIX="tools/${{ inputs.supplier_id }}/${{ inputs.tool_name }}"
+          mkdir -p "$PREFIX"
+          echo "${{ inputs.html_base64 }}" | base64 -d > "$PREFIX/index.html"
+          echo "Wrote $PREFIX/index.html"
+
+      - name: Open pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BRANCH="publish/${{ inputs.supplier_id }}-${{ inputs.tool_name }}-${{ github.run_id }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add "tools/${{ inputs.supplier_id }}/${{ inputs.tool_name }}/"
+          git commit -m "Publish tool: ${{ inputs.tool_name }} (${{ inputs.supplier_id }})"
+          git push -u origin "$BRANCH"
+
+          gh pr create \
+            --title "Publish: ${{ inputs.tool_name }}" \
+            --base main \
+            --head "$BRANCH" \
+            --body "Automated publish from AI Tool Sandbox.
+
+          - **Supplier:** \`${{ inputs.supplier_id }}\`
+          - **Tool:** \`${{ inputs.tool_name }}\`
+          - **Path:** \`tools/${{ inputs.supplier_id }}/${{ inputs.tool_name }}/\`
+
+          Merge to deploy via GitHub Pages."
+
+          PR_URL=$(gh pr view --json url -q .url)
+          PR_NUMBER=$(gh pr view --json number -q .number)
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Callback to server
+        if: always() && steps.pr.outputs.pr_url != ''
+        run: |
+          curl -fsS -X POST "${{ inputs.callback_url }}" \
+            -H "Content-Type: application/json" \
+            -H "X-Callback-Secret: ${{ secrets.CALLBACK_SECRET }}" \
+            -d "{
+              \"jobId\": \"${{ inputs.job_id }}\",
+              \"prUrl\": \"${{ steps.pr.outputs.pr_url }}\",
+              \"prNumber\": ${{ steps.pr.outputs.pr_number }},
+              \"runId\": \"${{ github.run_id }}\"
+            }"
