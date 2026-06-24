@@ -8,6 +8,10 @@
     "index": {
       "title": "index",
       "category": "auction"
+    },
+    "live-currency-stock-dashboard": {
+      "title": "Live Currency & Stock Dashboard",
+      "category": "mall"
     }
   }
 }
