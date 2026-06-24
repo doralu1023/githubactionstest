@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'tools/**'
+      - 'toolbox/**'
       - 'index.html'
       - 'main.js'
       - 'style.css'
@@ -30,9 +30,9 @@ jobs:
 
       - name: Prepare site (sandbox UI + published tools)
         run: |
-          mkdir -p _site/tools
+          mkdir -p _site
           cp index.html main.js style.css _site/
-          if [ -d tools ]; then cp -r tools/* _site/tools/; fi
+          if [ -d toolbox ]; then cp -r toolbox _site/toolbox; fi
           if [ -d docs ]; then cp -r docs _site/docs; fi
           touch _site/.nojekyll
           echo "Site root:"

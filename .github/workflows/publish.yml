@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       internal_user_id:
-        description: 'Internal user slug (tools/<internal_user_id>/...)'
+        description: 'Internal user slug (branch naming only)'
         required: true
       tool_name:
         description: 'Tool slug'
@@ -15,8 +15,11 @@ on:
       tool_title:
         description: 'Display title for portal nav (optional)'
         required: false
+      bundle_url:
+        description: 'Server URL to GET file bundle (preferred — avoids 64KB input limit)'
+        required: false
       files_base64:
-        description: 'Base64-encoded JSON array of {path, content, encoding?} for the full upload bundle'
+        description: 'Legacy — base64-encoded JSON array of {path, content, encoding?}'
         required: false
       html_base64:
         description: 'Legacy — base64-encoded sanitized index.html only'
@@ -38,22 +41,44 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Write sanitized tool bundle
+        env:
+          PREFIX: toolbox/tools/${{ inputs.tool_name }}
+          BUNDLE_URL: ${{ inputs.bundle_url }}
+          CALLBACK_SECRET: ${{ secrets.CALLBACK_SECRET }}
+          FILES_BASE64: ${{ inputs.files_base64 }}
+          HTML_BASE64: ${{ inputs.html_base64 }}
         run: |
-          PREFIX="tools/${{ inputs.internal_user_id }}/${{ inputs.tool_name }}"
           node <<'NODE'
           const fs = require('fs');
           const path = require('path');
 
           const prefix = process.env.PREFIX;
           let files;
-          if (process.env.FILES_BASE64) {
-            const raw = Buffer.from(process.env.FILES_BASE64, 'base64').toString('utf8');
-            files = JSON.parse(raw);
-          } else if (process.env.HTML_BASE64) {
-            const html = Buffer.from(process.env.HTML_BASE64, 'base64').toString('utf8');
-            files = [{ path: 'index.html', content: html }];
-          } else {
-            throw new Error('files_base64 or html_base64 input is required');
+
+          async function loadFiles() {
+            if (process.env.BUNDLE_URL) {
+              const res = await fetch(process.env.BUNDLE_URL, {
+                headers: { 'X-Callback-Secret': process.env.CALLBACK_SECRET || '' },
+              });
+              if (!res.ok) {
+                const body = await res.text();
+                throw new Error(`Bundle fetch failed (${res.status}): ${body.slice(0, 200)}`);
+              }
+              const payload = await res.json();
+              if (!Array.isArray(payload.files) || !payload.files.length) {
+                throw new Error('Bundle response missing files[]');
+              }
+              return payload.files;
+            }
+            if (process.env.FILES_BASE64) {
+              const raw = Buffer.from(process.env.FILES_BASE64, 'base64').toString('utf8');
+              return JSON.parse(raw);
+            }
+            if (process.env.HTML_BASE64) {
+              const html = Buffer.from(process.env.HTML_BASE64, 'base64').toString('utf8');
+              return [{ path: 'index.html', content: html }];
+            }
+            throw new Error('bundle_url, files_base64, or html_base64 is required');
           }
 
           function flattenBundlePaths(bundle) {
@@ -81,24 +106,26 @@ jobs:
             }));
           }
 
-          files = flattenBundlePaths(files);
-
-          for (const file of files) {
-            const dest = path.join(prefix, file.path);
-            fs.mkdirSync(path.dirname(dest), { recursive: true });
-            if (file.encoding === 'base64') {
-              fs.writeFileSync(dest, Buffer.from(file.content, 'base64'));
-            } else {
-              fs.writeFileSync(dest, file.content, 'utf8');
+          async function main() {
+            const bundle = await loadFiles();
+            const files = flattenBundlePaths(bundle);
+            for (const file of files) {
+              const dest = path.join(prefix, file.path);
+              fs.mkdirSync(path.dirname(dest), { recursive: true });
+              if (file.encoding === 'base64') {
+                fs.writeFileSync(dest, Buffer.from(file.content, 'base64'));
+              } else {
+                fs.writeFileSync(dest, file.content, 'utf8');
+              }
             }
+            console.log(`Wrote ${files.length} file(s) under ${prefix}/`);
           }
 
-          console.log(`Wrote ${files.length} file(s) under ${prefix}/`);
+          main().catch((err) => {
+            console.error(err.message);
+            process.exit(1);
+          });
           NODE
-        env:
-          PREFIX: tools/${{ inputs.internal_user_id }}/${{ inputs.tool_name }}
-          FILES_BASE64: ${{ inputs.files_base64 }}
-          HTML_BASE64: ${{ inputs.html_base64 }}
 
       - name: Update tool registry and portal nav
         env:
@@ -146,7 +173,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
-          git add "tools/${{ inputs.internal_user_id }}/${{ inputs.tool_name }}/"
+          git add "toolbox/tools/${{ inputs.tool_name }}/"
           git add toolbox/registry.json toolbox/index.html
           git commit -m "Publish tool: ${{ inputs.tool_name }} (${{ inputs.internal_user_id }})"
           git push -u origin "$BRANCH"
@@ -164,7 +191,7 @@ jobs:
           - **Internal user:** \`${{ inputs.internal_user_id }}\`
           - **Tool:** \`${{ inputs.tool_name }}\`
           - **Category:** \`${{ inputs.category }}\`
-          - **Path:** \`tools/${{ inputs.internal_user_id }}/${{ inputs.tool_name }}/\`
+          - **Path:** \`toolbox/tools/${{ inputs.tool_name }}/\`
 
           Merge to deploy via GitHub Pages. Portal nav is updated in this PR."
 

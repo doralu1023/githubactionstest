@@ -1195,12 +1195,16 @@ function promptPublishCategory(idx) {
   mallRadio.checked = true
   auctionRadio.checked = false
   dialog.dataset.publishIdx = String(idx)
-  dialog.hidden = false
+  dialog.classList.add('open')
+  dialog.removeAttribute('hidden')
 }
 
 function closePublishCategoryDialog() {
   const dialog = document.getElementById('publishCategoryDialog')
-  if (dialog) dialog.hidden = true
+  if (dialog) {
+    dialog.classList.remove('open')
+    dialog.hidden = true
+  }
 }
 
 function confirmPublishCategory() {

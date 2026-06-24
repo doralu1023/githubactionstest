@@ -10,6 +10,11 @@ app.use(express.json({ limit: '10mb' }));
 
 const buildJobs = new Map();
 const publishJobs = new Map();
+const publishBundles = new Map();
+
+/** GitHub workflow_dispatch total inputs payload limit (chars). */
+const GH_WORKFLOW_INPUT_LIMIT = 65535;
+const PUBLISH_BUNDLE_TTL_MS = 2 * 60 * 60 * 1000;
 
 const CALLBACK_SECRET = process.env.CALLBACK_SECRET;
 const GH_TOKEN = process.env.GITHUB_TOKEN;
@@ -66,45 +71,18 @@ function internalUserPathSlug(id) {
   return slug;
 }
 
-function pagesUrlFor(internalUserId, toolName) {
-  const userSlug = internalUserPathSlug(internalUserId);
+function pagesUrlFor(_internalUserId, toolName) {
   const toolSlug = slugify(toolName);
-  return `${GITHUB_PAGES_BASE}/tools/${userSlug}/${toolSlug}/`;
+  return `${GITHUB_PAGES_BASE}/toolbox/tools/${toolSlug}/`;
 }
 
-let publishWorkflowInputMode = null;
-let publishWorkflowInputModeAt = 0;
-const PUBLISH_MODE_TTL_MS = 60_000;
-
-/**
- * Detect whether publish.yml on main expects files_base64 (bundle) or html_base64 (legacy).
- * @returns {Promise<'files'|'html'>}
- */
-async function resolvePublishPayloadMode() {
+function purgeExpiredPublishBundles() {
   const now = Date.now();
-  if (publishWorkflowInputMode && now - publishWorkflowInputModeAt < PUBLISH_MODE_TTL_MS) {
-    return publishWorkflowInputMode;
+  for (const [jobId, bundle] of publishBundles.entries()) {
+    if (now - bundle.createdAt > PUBLISH_BUNDLE_TTL_MS) {
+      publishBundles.delete(jobId);
+    }
   }
-
-  try {
-    const data = await ghGet(
-      `https://api.github.com/repos/${GH_REPO}/contents/.github/workflows/publish.yml?ref=main`
-    );
-    const yaml = Buffer.from(data.content, 'base64').toString('utf8');
-    publishWorkflowInputMode = /files_base64:/.test(yaml) ? 'files' : 'html';
-  } catch (err) {
-    console.warn('[PUBLISH] workflow probe failed, using html_base64:', err.message);
-    publishWorkflowInputMode = 'html';
-  }
-
-  publishWorkflowInputModeAt = now;
-  return publishWorkflowInputMode;
-}
-
-function pickIndexFile(files) {
-  return (
-    files.find((f) => f.path === 'index.html' || /\.html?$/i.test(f.path)) || files[0]
-  );
 }
 
 /** Strip shared top-level folder prefix from folder uploads. */
@@ -141,12 +119,10 @@ function normalizeBundlePaths(files) {
  * @param {{ internalUserId: string, toolName: string, category: string, toolTitle?: string, files: Array<{path: string, content: string, encoding?: string}>, jobId: string }} opts
  */
 async function triggerPublishWorkflow(
-  { internalUserId, toolName, category, toolTitle, files, jobId },
-  retried = false
+  { internalUserId, toolName, category, toolTitle, files, jobId }
 ) {
   const userSlug = internalUserPathSlug(internalUserId);
   const toolSlug = slugify(toolName);
-  const mode = await resolvePublishPayloadMode();
 
   const inputs = {
     internal_user_id: userSlug,
@@ -160,17 +136,12 @@ async function triggerPublishWorkflow(
     inputs.tool_title = toolTitle;
   }
 
-  if (mode === 'files') {
-    inputs.files_base64 = Buffer.from(JSON.stringify(files), 'utf-8').toString('base64');
-  } else {
-    const indexFile = pickIndexFile(files);
-    inputs.html_base64 = Buffer.from(indexFile.content, 'utf-8').toString('base64');
-    if (files.length > 1) {
-      console.warn(
-        `[PUBLISH] Remote publish.yml is legacy (html_base64 only) — publishing ${indexFile.path} (${files.length} files in bundle). Push updated publish.yml to GitHub for full bundle deploy.`
-      );
-    }
+  if (!SERVER_URL) {
+    throw new Error(
+      'SERVER_URL must be set in .env so GitHub Actions can fetch the bundle (avoids 64KB workflow input limit).'
+    );
   }
+  inputs.bundle_url = `${SERVER_URL}/api/publish-bundle/${jobId}`;
 
   try {
     await axios.post(
@@ -180,12 +151,14 @@ async function triggerPublishWorkflow(
     );
   } catch (err) {
     const ghMsg = err.response?.data?.message || '';
-    if (!retried && mode === 'files' && /files_base64/.test(ghMsg)) {
-      publishWorkflowInputMode = 'html';
-      publishWorkflowInputModeAt = Date.now();
-      return triggerPublishWorkflow(
-        { internalUserId, toolName, category, toolTitle, files, jobId },
-        true
+    if (/Unexpected inputs provided/.test(ghMsg) && /bundle_url/.test(ghMsg)) {
+      throw new Error(
+        'publish.yml on GitHub main is out of date — push the latest .github/workflows/publish.yml (bundle_url input), then retry.'
+      );
+    }
+    if (/inputs are too large/i.test(ghMsg)) {
+      throw new Error(
+        `Bundle exceeds GitHub workflow input limit (${GH_WORKFLOW_INPUT_LIMIT} chars total). Push the latest publish.yml (bundle_url fetch mode) to GitHub, then retry.`
       );
     }
     throw err;
@@ -195,7 +168,7 @@ async function triggerPublishWorkflow(
     pagesUrl: pagesUrlFor(internalUserId, toolName),
     internalUserSlug: userSlug,
     toolSlug,
-    publishMode: mode,
+    publishMode: 'bundle_url',
   };
 }
 
@@ -398,6 +371,9 @@ app.post('/api/publish', async (req, res) => {
     dispatchedAt: Date.now(),
   });
 
+  purgeExpiredPublishBundles();
+  publishBundles.set(jobId, { files: publishFiles, createdAt: Date.now() });
+
   try {
     const result = await triggerPublishWorkflow({
       internalUserId,
@@ -420,6 +396,7 @@ app.post('/api/publish', async (req, res) => {
   } catch (err) {
     console.error('[PUBLISH]', err.response?.data || err.message);
     publishJobs.delete(jobId);
+    publishBundles.delete(jobId);
     const ghMsg = err.response?.data?.message;
     let msg = ghMsg || err.message || 'Publish failed';
     if (ghMsg === 'Not Found') {
@@ -427,10 +404,28 @@ app.post('/api/publish', async (req, res) => {
         'publish.yml not found on main — push .github/workflows/publish.yml to GitHub first.';
     } else if (/Unexpected inputs provided/.test(ghMsg || '')) {
       msg =
-        'publish.yml on GitHub main is out of date — push the latest .github/workflows/publish.yml (files_base64 input) to the repo, then retry.';
+        'publish.yml on GitHub main is out of date — push the latest .github/workflows/publish.yml (bundle_url input) to the repo, then retry.';
+    } else if (/inputs are too large/i.test(ghMsg || '')) {
+      msg =
+        `Bundle exceeds GitHub workflow input limit (${GH_WORKFLOW_INPUT_LIMIT} chars). Push the latest publish.yml (bundle_url fetch mode) to GitHub, then retry.`;
     }
     res.status(500).json({ error: msg });
   }
+});
+
+app.get('/api/publish-bundle/:jobId', (req, res) => {
+  const secret = req.headers['x-callback-secret'];
+  if (secret !== CALLBACK_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  purgeExpiredPublishBundles();
+  const bundle = publishBundles.get(req.params.jobId);
+  if (!bundle) {
+    return res.status(404).json({ error: 'Bundle not found or expired' });
+  }
+
+  res.json({ files: bundle.files });
 });
 
 app.post('/api/publish-complete', async (req, res) => {
@@ -454,6 +449,7 @@ app.post('/api/publish-complete', async (req, res) => {
     });
   }
 
+  publishBundles.delete(jobId);
   res.json({ ok: true });
 });
 
@@ -555,4 +551,5 @@ app.use(express.static(path.join(__dirname)));
 app.listen(3000, () => {
   console.log('Server 運行於 http://localhost:3000');
   console.log('[routes] POST /api/publish → workflow publish.yml');
+  console.log('[routes] GET  /api/publish-bundle/:jobId → bundle fetch for Actions');
 });
