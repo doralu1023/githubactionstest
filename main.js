@@ -1473,7 +1473,7 @@ async function pollPublishStatus(jobId, publishLog, prog) {
             )
             appendPublishLog(
               publishLog,
-              `<br><span class="log-info">[publish] Merge the PR to deploy — live URL will appear here after Pages deploys (often 3–7 min).</span>`
+              `<br><span class="log-info">[publish] Merge the PR to deploy — live URL will appear here after Pages deploys (often ~10 min).</span>`
             )
           } else if (attempts % 6 === 0 && publishLog) {
             appendPublishLog(
@@ -1485,10 +1485,9 @@ async function pollPublishStatus(jobId, publishLog, prog) {
         }
 
         if (data.status === 'deploying') {
-          const width = Math.min(70 + attempts * 0.3, 90) + '%'
           if (prog) {
-            prog.style.width = width
-            if (activePublishJob) activePublishJob.progress = width
+            prog.style.width = '100%'
+            if (activePublishJob) activePublishJob.progress = '100%'
           }
           if (publishLog && !publishLog.dataset.deployShown) {
             publishLog.dataset.deployShown = '1'
@@ -1497,14 +1496,13 @@ async function pollPublishStatus(jobId, publishLog, prog) {
             if (data.pagesUrl) {
               appendPublishLog(
                 publishLog,
-                `<br><span class="log-info">[publish] Live URL (GitHub Pages often takes 3–7 min): <a href="${data.pagesUrl}" target="_blank" rel="noopener">${escapeHTML(data.pagesUrl)}</a></span>`
+                `<br><span class="log-info">[publish] Live URL (GitHub Pages often takes 10 min): <a href="${data.pagesUrl}" target="_blank" rel="noopener">${escapeHTML(data.pagesUrl)}</a></span>`
               )
             }
-          } else if (attempts % 6 === 0 && publishLog) {
-            appendPublishLog(
-              publishLog,
-              `<br><span class="log-warn">[publish] Waiting for Pages deploy… (${Math.round((attempts * pollIntervalMs) / 1000)}s)</span>`
-            )
+            clearInterval(interval)
+            finishPublishJob(publishLog, prog, '100%')
+            toast('🌐 PR merged — check live URL when Pages finishes (~10 min).')
+            resolve()
           }
           return
         }
