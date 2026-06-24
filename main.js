@@ -566,6 +566,170 @@ function readAsDataURL(file) {
   })
 }
 
+function formatFileSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
+}
+
+function normalizeUploadPath(file) {
+  return String(file.webkitRelativePath || file.name)
+    .replace(/\\/g, '/')
+    .replace(/^\.?\//, '')
+}
+
+/**
+ * Strip a shared top-level folder from folder uploads so files land at the tool root.
+ * e.g. "My Tool/index.html" → "index.html"
+ */
+function normalizeBundlePaths(entries) {
+  if (!entries.length) return entries
+
+  const splitPaths = entries.map((e) =>
+    String(e.path).replace(/\\/g, '/').split('/').filter(Boolean)
+  )
+  if (!splitPaths.every((segs) => segs.length > 1)) return entries
+
+  let commonDepth = 0
+  while (true) {
+    const segment = splitPaths[0][commonDepth]
+    if (segment === undefined) break
+    if (!splitPaths.every((segs) => segs[commonDepth] === segment)) break
+    commonDepth++
+  }
+  if (commonDepth === 0) return entries
+
+  return entries.map((e) => ({
+    ...e,
+    path: String(e.path)
+      .replace(/\\/g, '/')
+      .split('/')
+      .filter(Boolean)
+      .slice(commonDepth)
+      .join('/'),
+  }))
+}
+
+const TEXT_EXTS = new Set(['html', 'htm', 'css', 'js', 'txt', 'json', 'svg'])
+
+const JS_UNSAFE_REPLACEMENTS = [
+  { re: /\beval\s*\(/g, replacement: 'void 0 /* eval stripped */(', reason: 'eval() removed' },
+  {
+    re: /\bnew\s+Function\s*\(/g,
+    replacement: 'void 0 /* Function stripped */(',
+    reason: 'Function() constructor removed',
+  },
+  {
+    re: /setTimeout\s*\(\s*(['"`])/g,
+    replacement: 'void 0 /* setTimeout(string) stripped */($1',
+    reason: 'setTimeout(string) removed',
+  },
+  {
+    re: /setInterval\s*\(\s*(['"`])/g,
+    replacement: 'void 0 /* setInterval(string) stripped */($1',
+    reason: 'setInterval(string) removed',
+  },
+  {
+    re: /document\.write\s*\(/g,
+    replacement: 'void 0 /* document.write stripped */(',
+    reason: 'document.write() removed',
+  },
+]
+
+/**
+ * Sanitize a JavaScript source file or inline script block.
+ * @returns {{ code: string, strips: number, log: string[], report: object[] }}
+ */
+function sanitizeJS(code, filename = 'script.js') {
+  const report = []
+  let strips = 0
+  let out = code
+
+  JS_UNSAFE_REPLACEMENTS.forEach(({ re, replacement, reason }) => {
+    re.lastIndex = 0
+    if (re.test(out)) {
+      re.lastIndex = 0
+      out = out.replace(re, replacement)
+      strips++
+      report.push({
+        element: filename,
+        action: 'stripped',
+        reason,
+        location: filename,
+      })
+    }
+  })
+
+  const log =
+    strips === 0
+      ? [`<span class="log-ok">[sanitizer] ✅ ${escapeHTML(filename)} — no unsafe patterns.</span>`]
+      : [
+          `<span class="log-err">[sanitizer] ⚠️ ${escapeHTML(filename)} — ${strips} pattern(s) neutralized.</span>`,
+          ...report.map(
+            (r) =>
+              `<span class="log-warn">[STRIPPED] ${escapeHTML(r.reason)}</span>`
+          ),
+        ]
+
+  return { code: out, strips, log, report }
+}
+
+function deriveBundleName(files, htmlFiles) {
+  const first = htmlFiles[0]
+  const path = normalizeUploadPath(first)
+  const parts = path.split('/').filter(Boolean)
+  if (parts.length > 1) return parts[0]
+  return parts[0].replace(/\.(html|htm)$/i, '') || 'tool'
+}
+
+function aggregateSanitMeta(sanitMeta) {
+  const totalStrips = sanitMeta.reduce((s, m) => s + (m.strips || 0), 0)
+  const report = sanitMeta.flatMap((m) =>
+    (m.report || []).map((r) => ({ ...r, element: r.element || m.path }))
+  )
+  const log = sanitMeta.flatMap((m) => m.log || [])
+  return { strips: totalStrips, report, log }
+}
+
+/**
+ * Build the full sanitized upload bundle — HTML and JS sanitized; paths preserved.
+ */
+async function buildSanitizedBundle(files) {
+  const entries = []
+  const sanitMeta = []
+
+  for (const f of files) {
+    const path = normalizeUploadPath(f)
+    const ext = path.split('.').pop().toLowerCase()
+
+    if (/\.(html|htm)$/i.test(path)) {
+      const raw = await readAsText(f)
+      const sanit = sanitizeHTML(raw)
+      entries.push({ path, content: sanit.html })
+      sanitMeta.push({ path, ...sanit })
+    } else if (ext === 'js') {
+      const raw = await readAsText(f)
+      const sanit = sanitizeJS(raw, path)
+      entries.push({ path, content: sanit.code })
+      sanitMeta.push({ path, strips: sanit.strips, report: sanit.report, log: sanit.log })
+    } else if (TEXT_EXTS.has(ext)) {
+      entries.push({ path, content: await readAsText(f) })
+    } else {
+      const dataUrl = await readAsDataURL(f)
+      entries.push({ path, content: dataUrl.split(',')[1], encoding: 'base64' })
+    }
+  }
+
+  const normalized = normalizeBundlePaths(entries)
+  const pathMap = new Map(entries.map((e, i) => [e.path, normalized[i]?.path || e.path]))
+  const normalizedMeta = sanitMeta.map((m) => ({
+    ...m,
+    path: pathMap.get(m.path) || m.path,
+  }))
+
+  return { entries: normalized, sanitMeta: normalizedMeta }
+}
+
 async function buildAssetMap(assetFiles) {
   const map = {}
   await Promise.all(
@@ -621,11 +785,16 @@ async function handleFiles(files) {
     return
   }
 
-  renderFileListPreview(files)
+  renderFileListPreview(files, totalSize)
   uploadProg.style.width = '10%'
-  uploadStat.textContent = `Processing ${files.length} file(s)…`
+  uploadStat.textContent = `Processing ${files.length} file(s) (${formatFileSize(totalSize)})…`
 
-  // Build shared asset map once
+  const { entries: bundleFiles, sanitMeta } = await buildSanitizedBundle(files)
+  const bundleName = deriveBundleName(files, htmlFiles)
+  const bundleSanit = aggregateSanitMeta(sanitMeta)
+  uploadProg.style.width = '25%'
+
+  // Build shared asset map for inlined preview
   const assetMap = await buildAssetMap(assetFiles)
   uploadProg.style.width = '35%'
 
@@ -642,10 +811,11 @@ async function handleFiles(files) {
   }
 
   uploadProg.style.width = '100%'
-  uploadStat.textContent = `✅ ${htmlFiles.length} HTML file(s) processed (${assetFiles.length} asset(s) inlined).`
+  const jsCount = files.filter((f) => /\.js$/i.test(f.name)).length
+  uploadStat.textContent = `✅ ${files.length} file(s) (${formatFileSize(totalSize)}) — ${htmlFiles.length} HTML + ${jsCount} JS sanitized.`
 
-  // Show sanitize results (tabbed if >1, single if =1)
-  renderAllSanitizeResults(results)
+  // Show sanitize results (tabbed if >1 HTML, includes bundle JS summary)
+  renderAllSanitizeResults(results, bundleSanit, sanitMeta)
 
   // Show analysis + preview for first (or only) file
   showAnalysis(results[0].analysisResult)
@@ -654,37 +824,40 @@ async function handleFiles(files) {
   const mode = getUploadMode()
 
   if (mode === 'sanitize') {
-    // Store for download
-    sanitizeOnlyResults = results.map((r) => ({
-      name: r.file.name.replace(/\.(html|htm)$/i, '') + '_sanitized.html',
-      content: r.sanitResult.html,
-      sanitResult: r.sanitResult,
-    }))
+    sanitizeOnlyResults = [
+      {
+        name: bundleName,
+        zipName: `${bundleName}_sanitized.zip`,
+        bundleFiles,
+        content: results[0].sanitResult.html,
+        sanitResult: bundleSanit,
+        htmlResults: results,
+      },
+    ]
     renderSanitizeDlSection()
-    toast(`🛡️ ${htmlFiles.length} file(s) sanitized. Ready to download.`)
+    toast(`🛡️ Bundle sanitized (${bundleFiles.length} files). Download ZIP or submit to GitHub.`)
     advanceStep(2)
     advanceStep(3)
     // Make sure queue download section is hidden
     document.getElementById('sanitDlSection').style.display = ''
   } else {
-    // Upload to system: push all HTML files to queue
     resetSanitizeDlSection()
-    results.forEach((r) => {
-      uploadedTools.push({
-        id: 'tool_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
-        name: r.file.name,
-        content: r.sanitResult.html,
-        risk: r.analysisResult.risk,
-        status: 'pending',
-        uploadedBy: ROLES[currentRole].label,
-        analysisResult: r.analysisResult,
-      })
+    uploadedTools.push({
+      id: 'tool_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      name: bundleName,
+      content: results[0].sanitResult.html,
+      bundleFiles,
+      zipName: `${bundleName}_sanitized.zip`,
+      risk: results[0].analysisResult.risk,
+      status: 'pending',
+      uploadedBy: ROLES[currentRole].label,
+      analysisResult: results[0].analysisResult,
     })
     advanceStep(2)
     advanceStep(3)
     refreshQueue()
     refreshToolSelect()
-    toast(`📤 ${htmlFiles.length} tool(s) added to approval queue.`)
+    toast(`📤 "${bundleName}" bundle (${bundleFiles.length} files) added to approval queue.`)
   }
 }
 
@@ -755,7 +928,19 @@ function sanitizeHTML(html) {
     })
   })
 
-  // 3. Rebuild with CSP
+  // 3. Sanitize inline <script> blocks (no src)
+  doc.querySelectorAll('script:not([src])').forEach((el) => {
+    const src = el.textContent
+    if (!src || !src.trim()) return
+    const sanit = sanitizeJS(src, 'inline <script>')
+    if (sanit.strips > 0) {
+      el.textContent = sanit.code
+      strips += sanit.strips
+      report.push(...sanit.report)
+    }
+  })
+
+  // 4. Rebuild with CSP
   const headHTML = doc.head ? doc.head.innerHTML : ''
   const bodyHTML = doc.body ? doc.body.innerHTML : ''
   const out = `<!DOCTYPE html><html><head>\n<meta charset="UTF-8">\n${headHTML}\n<meta http-equiv="Content-Security-Policy" content="default-src 'unsafe-inline' data: blob:; connect-src 'none';">\n</head><body>${bodyHTML}</body></html>`
@@ -786,14 +971,18 @@ function describeEl(el) {
 /* ════════════════════════════════════════════════
    RENDER SANITIZE RESULTS (single or tabbed)
 ════════════════════════════════════════════════ */
-function renderAllSanitizeResults(results) {
+function renderAllSanitizeResults(results, bundleSanit, sanitMeta) {
   const tabStrip = document.getElementById('sanitTabStrip')
   const tabPanels = document.getElementById('sanitTabPanels')
   const singleWrap = document.getElementById('sanitSingleWrap')
   const summaryEl = document.getElementById('sanitizeSummary')
   const pillEl = document.getElementById('sanitizePill')
 
-  const totalStrips = results.reduce((s, r) => s + r.sanitResult.strips, 0)
+  const htmlStrips = results.reduce((s, r) => s + r.sanitResult.strips, 0)
+  const jsStrips = (sanitMeta || [])
+    .filter((m) => /\.js$/i.test(m.path))
+    .reduce((s, m) => s + (m.strips || 0), 0)
+  const totalStrips = bundleSanit?.strips ?? htmlStrips + jsStrips
 
   // Summary pill in card header
   if (pillEl) {
@@ -803,19 +992,37 @@ function renderAllSanitizeResults(results) {
         : `<span class="sanitize-pill">✅ All clean</span>`
   }
   if (summaryEl) {
+    const jsCount = (sanitMeta || []).filter((m) => /\.js$/i.test(m.path)).length
+    const fileSummary =
+      jsCount > 0
+        ? `${results.length} HTML + ${jsCount} JS file(s)`
+        : `${results.length} HTML file(s)`
     summaryEl.innerHTML =
       totalStrips > 0
-        ? `<span class="sanitize-pill warn">⚠️ ${totalStrips} item(s) stripped across ${results.length} file(s)</span>`
-        : `<span class="sanitize-pill">✅ All ${results.length} file(s) clean</span>`
+        ? `<span class="sanitize-pill warn">⚠️ ${totalStrips} item(s) stripped across ${fileSummary}</span>`
+        : `<span class="sanitize-pill">✅ ${fileSummary} clean</span>`
   }
 
   if (results.length === 1) {
-    // Single file: use existing static elements
     tabStrip.style.display = 'none'
     tabPanels.innerHTML = ''
     singleWrap.style.display = ''
+    const mergedSanit = {
+      ...results[0].sanitResult,
+      strips: totalStrips,
+      report: [
+        ...results[0].sanitResult.report,
+        ...(bundleSanit?.report || []).filter((r) => /\.js$/i.test(r.location || r.element || '')),
+      ],
+      log: [
+        ...results[0].sanitResult.log,
+        ...(sanitMeta || [])
+          .filter((m) => /\.js$/i.test(m.path))
+          .flatMap((m) => m.log || []),
+      ],
+    }
     renderSingleSanitizeResult(
-      results[0].sanitResult,
+      mergedSanit,
       results[0].file.name,
       'sanitizeLog',
       'sanitizeReport',
@@ -923,16 +1130,18 @@ function renderSanitizeDlSection() {
 
   list.innerHTML = sanitizeOnlyResults
     .map((item, idx) => {
-      const stripped = item.sanitResult.strips
+      const stripped = item.sanitResult?.strips ?? 0
+      const fileCount = item.bundleFiles?.length ?? 0
       const badge =
         stripped > 0
           ? `<span class="badge badge-orange">⚠️ ${stripped} stripped</span>`
           : `<span class="badge badge-green">✅ Clean</span>`
       return `<div class="sanit-dl-item">
-      <span style="font-size:1.2rem;">🌐</span>
-      <span class="sdl-name">${escapeHTML(item.name)}</span>
+      <span style="font-size:1.2rem;">📦</span>
+      <span class="sdl-name">${escapeHTML(item.zipName)}</span>
+      <span class="badge badge-gray">${fileCount} file(s)</span>
       ${badge}
-      <button class="btn btn-green btn-sm" onclick="downloadSanitizedFile(${idx})">⬇️ Download</button>
+      <button class="btn btn-green btn-sm" onclick="downloadSanitizedZip(${idx})">⬇️ Download ZIP</button>
       <button class="btn btn-red btn-sm" onclick="submitForPublish(${idx})">🚀 Submit PR</button>
     </div>`
     })
@@ -955,7 +1164,10 @@ function getSupplierId() {
 }
 
 function toolNameFromSanitizeItem(item) {
-  return item.name.replace(/_sanitized\.html$/i, '').replace(/\.(html|htm)$/i, '')
+  return String(item.name)
+    .replace(/_sanitized\.zip$/i, '')
+    .replace(/_sanitized\.html$/i, '')
+    .replace(/\.(html|htm)$/i, '')
 }
 
 async function readJsonResponse(res) {
@@ -981,7 +1193,8 @@ async function submitForPublish(idx) {
   const supplierId = getSupplierId()
 
   if (publishLog) {
-    publishLog.innerHTML = `<span class="log-info">[publish] Opening PR for "${escapeHTML(toolName)}"…</span>`
+    const fileCount = item.bundleFiles?.length ?? 0
+    publishLog.innerHTML = `<span class="log-info">[publish] Opening PR for "${escapeHTML(toolName)}" (${fileCount} file(s))…</span>`
   }
   if (prog) prog.style.width = '15%'
 
@@ -992,7 +1205,10 @@ async function submitForPublish(idx) {
       body: JSON.stringify({
         supplierId,
         toolName,
-        files: [{ path: 'index.html', content: item.content }],
+        files:
+          item.bundleFiles && item.bundleFiles.length > 0
+            ? item.bundleFiles
+            : [{ path: 'index.html', content: item.content }],
       }),
     })
     const { data } = await readJsonResponse(res)
@@ -1000,6 +1216,9 @@ async function submitForPublish(idx) {
 
     if (publishLog) {
       publishLog.innerHTML += `<br><span class="log-info">[publish] jobId: ${escapeHTML(data.jobId)}</span>`
+      if (data.warning) {
+        publishLog.innerHTML += `<br><span class="log-warn">[publish] ⚠️ ${escapeHTML(data.warning)}</span>`
+      }
       publishLog.innerHTML += `<br><span class="log-info">[publish] Workflow started — waiting for PR link…</span>`
       if (data.pagesUrl) {
         publishLog.innerHTML += `<br><span class="log-info">[publish] After merge: <a href="${data.pagesUrl}" target="_blank" rel="noopener">${escapeHTML(data.pagesUrl)}</a></span>`
@@ -1090,11 +1309,30 @@ async function pollPublishStatus(jobId, publishLog, prog) {
   })
 }
 
-function downloadSanitizedFile(idx) {
+function downloadSanitizedZip(idx) {
   const item = sanitizeOnlyResults[idx]
-  if (!item) return
-  triggerDownload(item.content, item.name, 'text/html;charset=utf-8')
-  toast(`⬇️ Downloading ${item.name}`)
+  if (!item?.bundleFiles?.length) return
+  const zipBytes = buildSimpleZip(bundleFilesToZipEntries(item.bundleFiles))
+  const blob = new Blob([zipBytes], { type: 'application/zip' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = item.zipName || `${item.name}_sanitized.zip`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  setTimeout(() => URL.revokeObjectURL(url), 2000)
+  toast(`⬇️ Downloading ${a.download}`)
+}
+
+function bundleFilesToZipEntries(bundleFiles) {
+  return bundleFiles.map((f) => ({
+    name: f.path.replace(/\\/g, '/'),
+    data:
+      f.encoding === 'base64'
+        ? Uint8Array.from(atob(f.content), (c) => c.charCodeAt(0))
+        : new TextEncoder().encode(f.content),
+  }))
 }
 
 function triggerDownload(content, filename, mime) {
@@ -1112,22 +1350,29 @@ function triggerDownload(content, filename, mime) {
 /* ════════════════════════════════════════════════
    FILE LIST PREVIEW
 ════════════════════════════════════════════════ */
-function renderFileListPreview(files) {
+function renderFileListPreview(files, totalSize) {
   const wrap = document.getElementById('fileListPreview')
   if (!wrap) return
   wrap.style.display = ''
-  wrap.innerHTML = files
+  const total = totalSize ?? files.reduce((s, f) => s + f.size, 0)
+  const rows = files
     .map((f) => {
       const ext = f.name.split('.').pop().toLowerCase()
-      const kb = (f.size / 1024).toFixed(1)
       const name = f.name.split('/').pop()
       return `<div class="fle">
       <span>${fileIcon(ext)}</span>
       <span class="fle-name">${escapeHTML(name)}</span>
-      <span class="fle-size">${kb} KB</span>
+      <span class="fle-size">${formatFileSize(f.size)}</span>
     </div>`
     })
     .join('')
+  wrap.innerHTML =
+    rows +
+    `<div class="fle fle-total">
+      <span>📦</span>
+      <span class="fle-name">Total</span>
+      <span class="fle-size">${formatFileSize(total)} · ${files.length} file(s)</span>
+    </div>`
 }
 
 /* ════════════════════════════════════════════════
@@ -1479,8 +1724,23 @@ function downloadApp(platform) {
 }
 
 /* ════════════════════════════════════════════════
-   ZIP / CRC helpers (kept for future use)
+   ZIP / CRC helpers
 ════════════════════════════════════════════════ */
+function stringToUint8(str) {
+  return new TextEncoder().encode(str)
+}
+
+function concatUint8(arrays) {
+  const total = arrays.reduce((s, a) => s + a.length, 0)
+  const out = new Uint8Array(total)
+  let offset = 0
+  for (const a of arrays) {
+    out.set(a, offset)
+    offset += a.length
+  }
+  return out
+}
+
 function crc32(data) {
   let crc = 0xffffffff
   for (let i = 0; i < data.length; i++) {
@@ -1488,6 +1748,67 @@ function crc32(data) {
     for (let j = 0; j < 8; j++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0)
   }
   return (crc ^ 0xffffffff) >>> 0
+}
+
+/** Build a store-only ZIP from [{ name, data: Uint8Array }]. */
+function buildSimpleZip(files) {
+  const localParts = []
+  const centralParts = []
+  let offset = 0
+
+  for (const file of files) {
+    const nameBytes = stringToUint8(file.name)
+    const data = file.data
+    const crc = crc32(data)
+    const size = data.length
+
+    const local = new Uint8Array(30 + nameBytes.length)
+    const lv = new DataView(local.buffer)
+    lv.setUint32(0, 0x04034b50, true) // local file header signature
+    lv.setUint16(4, 20, true) // version needed to extract
+    lv.setUint16(6, 0, true) // general purpose bit flag
+    lv.setUint16(8, 0, true) // compression method: store
+    lv.setUint32(14, crc, true)
+    lv.setUint32(18, size, true) // compressed size
+    lv.setUint32(22, size, true) // uncompressed size
+    lv.setUint16(26, nameBytes.length, true)
+    lv.setUint16(28, 0, true) // extra field length
+    local.set(nameBytes, 30)
+    localParts.push(local, data)
+
+    const central = new Uint8Array(46 + nameBytes.length)
+    const cv = new DataView(central.buffer)
+    cv.setUint32(0, 0x02014b50, true) // central file header signature
+    cv.setUint16(4, 20, true) // version made by
+    cv.setUint16(6, 20, true) // version needed to extract
+    cv.setUint16(8, 0, true) // general purpose bit flag
+    cv.setUint16(10, 0, true) // compression method: store
+    cv.setUint32(16, crc, true)
+    cv.setUint32(20, size, true) // compressed size
+    cv.setUint32(24, size, true) // uncompressed size
+    cv.setUint16(28, nameBytes.length, true)
+    cv.setUint16(30, 0, true) // extra field length
+    cv.setUint16(32, 0, true) // file comment length
+    cv.setUint16(34, 0, true) // disk number start
+    cv.setUint16(36, 0, true) // internal file attributes
+    cv.setUint32(38, 0, true) // external file attributes
+    cv.setUint32(42, offset, true) // relative offset of local header
+    central.set(nameBytes, 46)
+    centralParts.push(central)
+
+    offset += local.length + data.length
+  }
+
+  const centralDir = concatUint8(centralParts)
+  const end = new Uint8Array(22)
+  const ev = new DataView(end.buffer)
+  ev.setUint32(0, 0x06054b50, true) // end of central dir signature
+  ev.setUint16(8, files.length, true)
+  ev.setUint16(10, files.length, true)
+  ev.setUint32(12, centralDir.length, true)
+  ev.setUint32(16, offset, true)
+
+  return concatUint8([...localParts, centralDir, end])
 }
 
 /* ════════════════════════════════════════════════

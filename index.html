@@ -192,6 +192,9 @@
               <div id="sanitDlSection" style="display: none">
                 <hr class="divider" />
                 <p class="section-title">Ready to download</p>
+                <p class="publish-panel__lede" style="margin-bottom: var(--space-2)">
+                  Sanitized HTML, JS, and assets are packaged as a ZIP with folder structure preserved.
+                </p>
                 <div class="sanit-dl-list" id="sanitDlList"></div>
                 <div id="publishPanel" class="publish-panel" hidden>
                   <hr class="divider" />
@@ -234,10 +237,10 @@
                   margin-bottom: var(--space-3);
                 "
               >
-                Uploaded HTML is sanitized before storage or preview. Dangerous tags, inline event
-                handlers, and unsafe URL schemes are stripped automatically. JavaScript (.js and
-                inline &lt;script&gt;) is inspected and the upload is rejected if violations are
-                found.
+                Uploaded HTML and JavaScript (.html, .htm, .js) are sanitized before storage or
+                preview. Dangerous tags, inline event handlers, unsafe URL schemes, and risky JS
+                patterns (<code>eval()</code>, <code>Function()</code>, string <code>setTimeout</code>)
+                are stripped automatically.
               </p>
 
               <!-- Multi-file tabs (shown when >1 HTML) -->

@@ -50,6 +50,33 @@ jobs:
             throw new Error('files_base64 or html_base64 input is required');
           }
 
+          function flattenBundlePaths(bundle) {
+            if (!bundle.length) return bundle;
+            const split = bundle.map((f) =>
+              String(f.path).replace(/\\/g, '/').split('/').filter(Boolean)
+            );
+            if (!split.every((segs) => segs.length > 1)) return bundle;
+            let depth = 0;
+            while (true) {
+              const seg = split[0][depth];
+              if (seg === undefined) break;
+              if (!split.every((segs) => segs[depth] === seg)) break;
+              depth++;
+            }
+            if (depth === 0) return bundle;
+            return bundle.map((f) => ({
+              ...f,
+              path: String(f.path)
+                .replace(/\\/g, '/')
+                .split('/')
+                .filter(Boolean)
+                .slice(depth)
+                .join('/'),
+            }));
+          }
+
+          files = flattenBundlePaths(files);
+
           for (const file of files) {
             const dest = path.join(prefix, file.path);
             fs.mkdirSync(path.dirname(dest), { recursive: true });

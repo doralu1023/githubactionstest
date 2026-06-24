@@ -62,33 +62,119 @@ function pagesUrlFor(supplierId, toolName) {
   return `${GITHUB_PAGES_BASE}/tools/${supplierSlug}/${toolSlug}/`;
 }
 
+let publishWorkflowInputMode = null;
+let publishWorkflowInputModeAt = 0;
+const PUBLISH_MODE_TTL_MS = 60_000;
+
+/**
+ * Detect whether publish.yml on main expects files_base64 (bundle) or html_base64 (legacy).
+ * @returns {Promise<'files'|'html'>}
+ */
+async function resolvePublishPayloadMode() {
+  const now = Date.now();
+  if (publishWorkflowInputMode && now - publishWorkflowInputModeAt < PUBLISH_MODE_TTL_MS) {
+    return publishWorkflowInputMode;
+  }
+
+  try {
+    const data = await ghGet(
+      `https://api.github.com/repos/${GH_REPO}/contents/.github/workflows/publish.yml?ref=main`
+    );
+    const yaml = Buffer.from(data.content, 'base64').toString('utf8');
+    publishWorkflowInputMode = /files_base64:/.test(yaml) ? 'files' : 'html';
+  } catch (err) {
+    console.warn('[PUBLISH] workflow probe failed, using html_base64:', err.message);
+    publishWorkflowInputMode = 'html';
+  }
+
+  publishWorkflowInputModeAt = now;
+  return publishWorkflowInputMode;
+}
+
+function pickIndexFile(files) {
+  return (
+    files.find((f) => f.path === 'index.html' || /\.html?$/i.test(f.path)) || files[0]
+  );
+}
+
+/** Strip shared top-level folder prefix from folder uploads. */
+function normalizeBundlePaths(files) {
+  if (!files.length) return files;
+
+  const splitPaths = files.map((f) =>
+    String(f.path).replace(/\\/g, '/').split('/').filter(Boolean)
+  );
+  if (!splitPaths.every((segs) => segs.length > 1)) return files;
+
+  let commonDepth = 0;
+  while (true) {
+    const segment = splitPaths[0][commonDepth];
+    if (segment === undefined) break;
+    if (!splitPaths.every((segs) => segs[commonDepth] === segment)) break;
+    commonDepth++;
+  }
+  if (commonDepth === 0) return files;
+
+  return files.map((f) => ({
+    ...f,
+    path: String(f.path)
+      .replace(/\\/g, '/')
+      .split('/')
+      .filter(Boolean)
+      .slice(commonDepth)
+      .join('/'),
+  }));
+}
+
 /**
  * Trigger publish.yml — uses Actions GITHUB_TOKEN (Contents + PR write), not the server PAT.
+ * @param {{ supplierId: string, toolName: string, files: Array<{path: string, content: string, encoding?: string}>, jobId: string }} opts
  */
-async function triggerPublishWorkflow({ supplierId, toolName, htmlContent, jobId }) {
+async function triggerPublishWorkflow({ supplierId, toolName, files, jobId }, retried = false) {
   const supplierSlug = slugify(supplierId);
   const toolSlug = slugify(toolName);
-  const htmlBase64 = Buffer.from(htmlContent, 'utf-8').toString('base64');
+  const mode = await resolvePublishPayloadMode();
 
-  await axios.post(
-    `https://api.github.com/repos/${GH_REPO}/actions/workflows/publish.yml/dispatches`,
-    {
-      ref: 'main',
-      inputs: {
-        supplier_id: supplierSlug,
-        tool_name: toolSlug,
-        html_base64: htmlBase64,
-        job_id: jobId,
-        callback_url: `${SERVER_URL}/api/publish-complete`,
-      },
-    },
-    { headers: ghHeaders }
-  );
+  const inputs = {
+    supplier_id: supplierSlug,
+    tool_name: toolSlug,
+    job_id: jobId,
+    callback_url: `${SERVER_URL}/api/publish-complete`,
+  };
+
+  if (mode === 'files') {
+    inputs.files_base64 = Buffer.from(JSON.stringify(files), 'utf-8').toString('base64');
+  } else {
+    const indexFile = pickIndexFile(files);
+    inputs.html_base64 = Buffer.from(indexFile.content, 'utf-8').toString('base64');
+    if (files.length > 1) {
+      console.warn(
+        `[PUBLISH] Remote publish.yml is legacy (html_base64 only) — publishing ${indexFile.path} (${files.length} files in bundle). Push updated publish.yml to GitHub for full bundle deploy.`
+      );
+    }
+  }
+
+  try {
+    await axios.post(
+      `https://api.github.com/repos/${GH_REPO}/actions/workflows/publish.yml/dispatches`,
+      { ref: 'main', inputs },
+      { headers: ghHeaders }
+    );
+  } catch (err) {
+    const ghMsg = err.response?.data?.message || '';
+    if (!retried && mode === 'files' && /files_base64/.test(ghMsg)) {
+      publishWorkflowInputMode = 'html';
+      publishWorkflowInputModeAt = Date.now();
+      return triggerPublishWorkflow({ supplierId, toolName, files, jobId }, true);
+    }
+    throw err;
+  }
 
   return {
     pagesUrl: pagesUrlFor(supplierId, toolName),
     supplierSlug,
     toolSlug,
+    publishMode: mode,
   };
 }
 
@@ -276,9 +362,7 @@ app.post('/api/publish', async (req, res) => {
     return res.status(400).json({ error: 'htmlContent or files[] is required' });
   }
 
-  const indexFile =
-    bundleFiles.find((f) => f.path === 'index.html' || /\.html?$/i.test(f.path)) ||
-    bundleFiles[0];
+  const publishFiles = normalizeBundlePaths(bundleFiles);
 
   const jobId = `publish-${slugify(toolName)}-${Date.now()}`;
   const pagesUrl = pagesUrlFor(supplierId, toolName);
@@ -292,14 +376,22 @@ app.post('/api/publish', async (req, res) => {
   });
 
   try {
-    await triggerPublishWorkflow({
+    const result = await triggerPublishWorkflow({
       supplierId,
       toolName,
-      htmlContent: indexFile.content,
+      files: publishFiles,
       jobId,
     });
 
-    res.json({ jobId, pagesUrl });
+    res.json({
+      jobId,
+      pagesUrl,
+      publishMode: result.publishMode,
+      warning:
+        result.publishMode === 'html' && publishFiles.length > 1
+          ? 'Remote publish.yml only supports index.html. Push the updated publish.yml to GitHub to deploy the full ZIP bundle.'
+          : undefined,
+    });
   } catch (err) {
     console.error('[PUBLISH]', err.response?.data || err.message);
     publishJobs.delete(jobId);
@@ -308,6 +400,9 @@ app.post('/api/publish', async (req, res) => {
     if (ghMsg === 'Not Found') {
       msg =
         'publish.yml not found on main — push .github/workflows/publish.yml to GitHub first.';
+    } else if (/Unexpected inputs provided/.test(ghMsg || '')) {
+      msg =
+        'publish.yml on GitHub main is out of date — push the latest .github/workflows/publish.yml (files_base64 input) to the repo, then retry.';
     }
     res.status(500).json({ error: msg });
   }

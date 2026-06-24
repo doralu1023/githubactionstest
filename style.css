@@ -737,6 +737,15 @@ body.ui-slim .mode-toggle label[for="modeSanitize"] {
 .fle:last-child { border-bottom: none; }
 .fle-name { color: var(--text); flex: 1; font-family: var(--font-mono); font-size: 0.68rem; }
 .fle-size { color: var(--text-3); font-size: 0.66rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.fle-total {
+  margin-top: var(--space-1);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+  border-bottom: none;
+  font-weight: 600;
+}
+.fle-total .fle-name,
+.fle-total .fle-size { color: var(--text-2); }
 
 /* ═══════════════════════════════════════════════════════════
    ANALYSIS GRID
