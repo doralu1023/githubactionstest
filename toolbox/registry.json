@@ -12,6 +12,10 @@
     "advanced-csv-to-json-converter-filter": {
       "title": "Advanced CSV to JSON Converter & Filter",
       "category": "mall"
+    },
+    "test": {
+      "title": "Test",
+      "category": "mall"
     }
   }
 }
