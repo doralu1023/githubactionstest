@@ -12,6 +12,10 @@
     "advanced-csv-to-json-converter-filter": {
       "title": "Advanced CSV to JSON Converter & Filter",
       "category": "mall"
+    },
+    "supplier-pricing-profit-margin-calculator": {
+      "title": "Supplier Pricing & Profit Margin Calculator",
+      "category": "auction"
     }
   }
 }
