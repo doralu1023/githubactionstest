@@ -1,21 +1,5 @@
 {
   "baseUrl": "https://doralu1023.github.io/githubactionstest",
   "tools": {
-    "live-currency-stock-dashboard": {
-      "title": "Live Currency & Stock Dashboard",
-      "category": "auction"
-    },
-    "exmple2": {
-      "title": "Exmple2",
-      "category": "auction"
-    },
-    "advanced-csv-to-json-converter-filter": {
-      "title": "Advanced CSV to JSON Converter & Filter",
-      "category": "mall"
-    },
-    "supplier-pricing-profit-margin-calculator": {
-      "title": "Supplier Pricing & Profit Margin Calculator",
-      "category": "mall"
-    }
   }
 }
