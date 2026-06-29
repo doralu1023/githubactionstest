@@ -21,6 +21,8 @@ const GH_TOKEN = process.env.GITHUB_TOKEN;
 const PUBLISH_PAT = process.env.PUBLISH_PAT;
 const GH_REPO = process.env.GITHUB_REPO;
 const SERVER_URL = process.env.SERVER_URL;
+const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL;
+const SLACK_REVIEWER_USER_ID = process.env.SLACK_REVIEWER_USER_ID;
 
 const [GH_OWNER, GH_REPO_NAME] = (GH_REPO || '').split('/');
 const GITHUB_PAGES_BASE =
@@ -373,6 +375,72 @@ function publicPublishStatus(job) {
 }
 
 /**
+ * Ask engineers in Slack to review and merge a publish PR.
+ * No-op when SLACK_WEBHOOK_URL is unset.
+ *
+ * @param {{ prUrl: string, prNumber?: number, toolName: string, internalUserId: string, category: string }} opts
+ */
+async function notifySlackPrReview({ prUrl, prNumber, toolName, internalUserId, category }) {
+  if (!SLACK_WEBHOOK_URL || !prUrl) return;
+
+  const mention = SLACK_REVIEWER_USER_ID ? `<@${SLACK_REVIEWER_USER_ID}> ` : '';
+  const prLabel = prNumber ? `#${prNumber}` : 'open PR';
+  const text = `${mention}New tool publish PR ready for review: ${toolName}`;
+
+  await axios.post(
+    SLACK_WEBHOOK_URL,
+    {
+      text,
+      blocks: [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `${mention}*New publish PR* — please review and merge`,
+          },
+        },
+        {
+          type: 'section',
+          fields: [
+            { type: 'mrkdwn', text: `*Tool:*\n\`${toolName}\`` },
+            { type: 'mrkdwn', text: `*Submitted by:*\n\`${internalUserId}\`` },
+            { type: 'mrkdwn', text: `*Category:*\n${category || 'mall'}` },
+            { type: 'mrkdwn', text: `*PR:*\n<${prUrl}|${prLabel}>` },
+          ],
+        },
+        {
+          type: 'actions',
+          elements: [
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Review PR' },
+              url: prUrl,
+              style: 'primary',
+            },
+          ],
+        },
+      ],
+    },
+    { timeout: 10000 }
+  );
+}
+
+/**
+ * Fire Slack notification without failing the publish flow.
+ * @param {string} jobId
+ * @param {{ prUrl: string, prNumber?: number, toolName: string, internalUserId: string, category: string }} opts
+ */
+function scheduleSlackPrReview(jobId, opts) {
+  notifySlackPrReview(opts)
+    .then(() => {
+      const job = publishJobs.get(jobId);
+      if (job) publishJobs.set(jobId, { ...job, slackNotified: true });
+      console.log(`[SLACK] Notified for PR: ${opts.toolName}`);
+    })
+    .catch((err) => console.warn('[SLACK]', err.response?.data || err.message));
+}
+
+/**
  * Trigger publish.yml — legacy fallback when GitHub API publish is unavailable.
  * @param {{ internalUserId: string, toolName: string, category: string, toolTitle?: string, files: Array<{path: string, content: string, encoding?: string}>, jobId: string }} opts
  */
@@ -650,6 +718,14 @@ app.post('/api/publish', async (req, res) => {
       publishMode: result.publishMode,
     });
 
+    scheduleSlackPrReview(jobId, {
+      prUrl: result.prUrl,
+      prNumber: result.prNumber,
+      toolName,
+      internalUserId,
+      category: portalCategory,
+    });
+
     res.json({
       jobId,
       prUrl: result.prUrl,
@@ -736,6 +812,16 @@ app.post('/api/publish-complete', async (req, res) => {
       runId,
       actionsUrl: runId ? `https://github.com/${GH_REPO}/actions/runs/${runId}` : undefined,
     });
+
+    if (prUrl && !job.slackNotified) {
+      scheduleSlackPrReview(jobId, {
+        prUrl,
+        prNumber,
+        toolName: job.toolName,
+        internalUserId: job.internalUserId,
+        category: job.category,
+      });
+    }
   }
 
   publishBundles.delete(jobId);
