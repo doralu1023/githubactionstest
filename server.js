@@ -385,44 +385,24 @@ async function notifySlackPrReview({ prUrl, prNumber, toolName, internalUserId, 
 
   const mention = SLACK_REVIEWER_USER_ID ? `<@${SLACK_REVIEWER_USER_ID}> ` : '';
   const prLabel = prNumber ? `#${prNumber}` : 'open PR';
-  const text = `${mention}New tool publish PR ready for review: ${toolName}`;
+  const text = [
+    `${mention}:github: *New publish PR — please review and merge*`,
+    `• *Tool:* ${toolName}`,
+    `• *Submitted by:* ${internalUserId}`,
+    `• *Category:* ${category || 'mall'}`,
+    `• *PR:* <${prUrl}|${prLabel}>`,
+  ].join('\n');
 
-  await axios.post(
+  const res = await axios.post(
     SLACK_WEBHOOK_URL,
-    {
-      text,
-      blocks: [
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: `${mention}*New publish PR* — please review and merge`,
-          },
-        },
-        {
-          type: 'section',
-          fields: [
-            { type: 'mrkdwn', text: `*Tool:*\n\`${toolName}\`` },
-            { type: 'mrkdwn', text: `*Submitted by:*\n\`${internalUserId}\`` },
-            { type: 'mrkdwn', text: `*Category:*\n${category || 'mall'}` },
-            { type: 'mrkdwn', text: `*PR:*\n<${prUrl}|${prLabel}>` },
-          ],
-        },
-        {
-          type: 'actions',
-          elements: [
-            {
-              type: 'button',
-              text: { type: 'plain_text', text: 'Review PR' },
-              url: prUrl,
-              style: 'primary',
-            },
-          ],
-        },
-      ],
-    },
-    { timeout: 10000 }
+    { text },
+    { timeout: 10000, responseType: 'text', validateStatus: () => true }
   );
+
+  const body = String(res.data || '').trim();
+  if (res.status !== 200 || body !== 'ok') {
+    throw new Error(`Slack webhook failed (HTTP ${res.status}): ${body || 'empty response'}`);
+  }
 }
 
 /**
@@ -435,9 +415,11 @@ function scheduleSlackPrReview(jobId, opts) {
     .then(() => {
       const job = publishJobs.get(jobId);
       if (job) publishJobs.set(jobId, { ...job, slackNotified: true });
-      console.log(`[SLACK] Notified for PR: ${opts.toolName}`);
+      console.log(`[SLACK] Notified for PR: ${opts.toolName} → ${opts.prUrl}`);
     })
-    .catch((err) => console.warn('[SLACK]', err.response?.data || err.message));
+    .catch((err) => {
+      console.error('[SLACK] Notification failed:', err.message);
+    });
 }
 
 /**
@@ -904,4 +886,9 @@ app.use(express.static(path.join(__dirname)));
 app.listen(3000, () => {
   console.log('Server 運行於 http://localhost:3000');
   console.log('[routes] POST /api/publish → GitHub API (branch + PR)');
+  if (SLACK_WEBHOOK_URL) {
+    console.log('[SLACK] Webhook configured — PR notifications enabled');
+  } else {
+    console.log('[SLACK] Disabled — set SLACK_WEBHOOK_URL in .env to enable');
+  }
 });

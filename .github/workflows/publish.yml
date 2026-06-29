@@ -230,6 +230,27 @@ jobs:
           echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
 
+      - name: Notify Slack
+        if: steps.pr.outputs.pr_url != '' && secrets.SLACK_WEBHOOK_URL != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          PR_URL: ${{ steps.pr.outputs.pr_url }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+          TOOL_NAME: ${{ inputs.tool_name }}
+          INTERNAL_USER: ${{ inputs.internal_user_id }}
+          CATEGORY: ${{ inputs.category }}
+        run: |
+          PR_LABEL="${PR_NUMBER}"
+          if [ -z "$PR_LABEL" ] || [ "$PR_LABEL" = "0" ]; then PR_LABEL="open PR"; else PR_LABEL="#${PR_LABEL}"; fi
+          TEXT=":github: *New publish PR — please review and merge*
+          • *Tool:* ${TOOL_NAME}
+          • *Submitted by:* ${INTERNAL_USER}
+          • *Category:* ${CATEGORY}
+          • *PR:* <${PR_URL}|${PR_LABEL}>"
+          curl -fsS -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "$(jq -n --arg text "$TEXT" '{text: $text}')"
+
       - name: Callback to server
         if: steps.push.outcome == 'success' && steps.pr.outputs.pr_url != ''
         run: |
