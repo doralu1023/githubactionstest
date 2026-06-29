@@ -1,5 +1,9 @@
 {
   "baseUrl": "https://doralu1023.github.io/githubactionstest",
   "tools": {
+    "advanced-csv-to-json-converter-filter": {
+      "title": "Advanced CSV to JSON Converter & Filter",
+      "category": "mall"
+    }
   }
 }
