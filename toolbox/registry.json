@@ -4,6 +4,10 @@
     "advanced-csv-to-json-converter-filter": {
       "title": "Advanced CSV to JSON Converter & Filter",
       "category": "mall"
+    },
+    "demo-calculator": {
+      "title": "Demo Calculator",
+      "category": "auction"
     }
   }
 }
