@@ -1,10 +1,4 @@
 {
   "baseUrl": "https://doralu1023.github.io/githubactionstest",
-  "tools": {
-    "demo-calculator": {
-      "title": "Demo Calculator",
-      "category": "mall",
-      "owner": "internalUser"
-    }
-  }
+  "tools": {}
 }
