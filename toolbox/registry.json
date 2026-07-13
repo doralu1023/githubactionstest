@@ -1,4 +1,10 @@
 {
   "baseUrl": "https://doralu1023.github.io/githubactionstest",
-  "tools": {}
+  "tools": {
+    "supplier-pricing-profit-margin-calculator": {
+      "title": "Supplier Pricing & Profit Margin Calculator",
+      "category": "mall",
+      "owner": "internalUser"
+    }
+  }
 }
