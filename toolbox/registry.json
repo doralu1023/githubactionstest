@@ -5,11 +5,6 @@
       "title": "Supplier Pricing & Profit Margin Calculator",
       "category": "mall",
       "owner": "internalUser"
-    },
-    "calculator": {
-      "title": "Calculator",
-      "category": "mall",
-      "owner": "internalUser"
     }
   }
 }
