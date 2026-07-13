@@ -1,0 +1,10 @@
+{
+  "tool": "demo-calculator",
+  "files": [
+    ".DS_Store",
+    "index.html",
+    "main.js",
+    "style.css"
+  ],
+  "updatedAt": "2026-07-13T02:56:34.951Z"
+}
