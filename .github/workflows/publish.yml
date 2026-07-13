@@ -3,15 +3,23 @@ name: Publish Tool to GitHub Pages
 on:
   workflow_dispatch:
     inputs:
+      action:
+        description: 'publish = create/overwrite tool, delete = remove tool'
+        required: false
+        default: 'publish'
+        type: choice
+        options:
+          - publish
+          - delete
       internal_user_id:
-        description: 'Internal user slug (branch naming only)'
+        description: 'Internal user slug (branch naming + registry owner)'
         required: true
       tool_name:
         description: 'Tool slug'
         required: true
       category:
-        description: 'Portal category (mall or auction)'
-        required: true
+        description: 'Portal category (mall or auction) — required for publish'
+        required: false
       tool_title:
         description: 'Display title for portal nav (optional)'
         required: false
@@ -25,11 +33,11 @@ on:
         description: 'Legacy — base64-encoded sanitized index.html only'
         required: false
       job_id:
-        description: 'Server job ID for callback'
-        required: true
+        description: 'Server job ID for callback (optional for manual runs)'
+        required: false
       callback_url:
-        description: 'Server callback URL'
-        required: true
+        description: 'Server callback URL (optional for manual runs)'
+        required: false
 
 permissions:
   contents: write
@@ -40,7 +48,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate inputs
+        env:
+          ACTION: ${{ inputs.action }}
+          TOOL_NAME: ${{ inputs.tool_name }}
+          CATEGORY: ${{ inputs.category }}
+        run: |
+          if ! printf '%s' "$TOOL_NAME" | grep -Eq '^[a-z0-9][a-z0-9-]*$'; then
+            echo "::error::tool_name must be a lowercase slug ([a-z0-9-])"
+            exit 1
+          fi
+          if [ "$ACTION" = "delete" ] && [ ! -d "toolbox/tools/$TOOL_NAME" ]; then
+            echo "::error::Tool '$TOOL_NAME' does not exist — nothing to delete"
+            exit 1
+          fi
+          if [ "$ACTION" != "delete" ] && [ -z "$CATEGORY" ]; then
+            echo "::error::category is required when action=publish"
+            exit 1
+          fi
+
+      # Same-name upload = full replace: wipe any previous version so stale
+      # files from older uploads never survive an overwrite.
+      - name: Clear previous tool version
+        if: inputs.action != 'delete'
+        env:
+          TOOL_NAME: ${{ inputs.tool_name }}
+        run: rm -rf "toolbox/tools/$TOOL_NAME"
+
       - name: Write sanitized tool bundle
+        if: inputs.action != 'delete'
         env:
           PREFIX: toolbox/tools/${{ inputs.tool_name }}
           BUNDLE_URL: ${{ inputs.bundle_url }}
@@ -53,7 +89,6 @@ jobs:
           const path = require('path');
 
           const prefix = process.env.PREFIX;
-          let files;
 
           async function loadFiles() {
             if (process.env.BUNDLE_URL) {
@@ -118,7 +153,21 @@ jobs:
                 fs.writeFileSync(dest, file.content, 'utf8');
               }
             }
-            console.log(`Wrote ${files.length} file(s) under ${prefix}/`);
+            // manifest.json lets the portal fetch + zip a tool's files client-side
+            // (GitHub Pages has no directory listing).
+            const manifest = {
+              tool: path.basename(prefix),
+              files: files
+                .map((f) => String(f.path).replace(/\\/g, '/'))
+                .filter((p) => p !== 'manifest.json')
+                .sort(),
+              updatedAt: new Date().toISOString(),
+            };
+            fs.writeFileSync(
+              path.join(prefix, 'manifest.json'),
+              JSON.stringify(manifest, null, 2) + '\n'
+            );
+            console.log(`Wrote ${files.length} file(s) + manifest.json under ${prefix}/`);
           }
 
           main().catch((err) => {
@@ -127,53 +176,92 @@ jobs:
           });
           NODE
 
+      - name: Remove tool files
+        if: inputs.action == 'delete'
+        env:
+          TOOL_NAME: ${{ inputs.tool_name }}
+        run: rm -rf "toolbox/tools/$TOOL_NAME"
+
       - name: Update tool registry
         env:
           GITHUB_PAGES_BASE: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+          ACTION: ${{ inputs.action }}
           TOOL_NAME: ${{ inputs.tool_name }}
           TOOL_TITLE: ${{ inputs.tool_title }}
           CATEGORY: ${{ inputs.category }}
+          INTERNAL_USER: ${{ inputs.internal_user_id }}
         run: |
           node <<'NODE'
           const fs = require('fs');
 
           const registryPath = 'toolbox/registry.json';
           const slug = process.env.TOOL_NAME;
-          const category = (process.env.CATEGORY || 'mall').toLowerCase();
-          if (!['mall', 'auction'].includes(category)) {
-            throw new Error(`Invalid category "${category}" — use mall or auction`);
-          }
-
-          const titleFromSlug = (s) =>
-            s.split('-').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+          const action = process.env.ACTION || 'publish';
 
           let registry = { baseUrl: process.env.GITHUB_PAGES_BASE, tools: {} };
           if (fs.existsSync(registryPath)) {
             registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
           }
           registry.baseUrl = process.env.GITHUB_PAGES_BASE;
-          registry.tools[slug] = {
-            title: process.env.TOOL_TITLE || registry.tools[slug]?.title || titleFromSlug(slug),
-            category,
-          };
+          registry.tools = registry.tools || {};
+
+          if (action === 'delete') {
+            if (registry.tools[slug]) {
+              delete registry.tools[slug];
+              console.log(`Registry updated: removed ${slug}`);
+            } else {
+              console.log(`Registry: ${slug} not present — nothing to remove`);
+            }
+          } else {
+            const category = (process.env.CATEGORY || 'mall').toLowerCase();
+            if (!['mall', 'auction'].includes(category)) {
+              throw new Error(`Invalid category "${category}" — use mall or auction`);
+            }
+            const titleFromSlug = (s) =>
+              s.split('-').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+            registry.tools[slug] = {
+              title: process.env.TOOL_TITLE || registry.tools[slug]?.title || titleFromSlug(slug),
+              category,
+              // owner is set on first publish and kept on overwrite, so a
+              // re-upload by someone else stays attributed to the original owner.
+              owner: registry.tools[slug]?.owner || process.env.INTERNAL_USER || 'unknown',
+            };
+            console.log(
+              `Registry updated: ${slug} → ${category} (owner: ${registry.tools[slug].owner})`
+            );
+          }
           fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2) + '\n');
-          console.log(`Registry updated: ${slug} → ${category}`);
           NODE
+
+      # On delete, rebuild the portal nav in the same PR so the dead link
+      # disappears together with the tool.
+      - name: Refresh portal nav
+        if: inputs.action == 'delete'
+        env:
+          GITHUB_PAGES_BASE: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
+        run: node scripts/update-portal-nav.js
 
       - name: Push publish branch
         id: push
         env:
           GH_TOKEN: ${{ github.token }}
+          ACTION: ${{ inputs.action }}
+          TOOL_NAME: ${{ inputs.tool_name }}
+          INTERNAL_USER: ${{ inputs.internal_user_id }}
         run: |
-          BRANCH="publish/${{ inputs.internal_user_id }}-${{ inputs.tool_name }}-${{ github.run_id }}"
+          BRANCH="${ACTION}/${INTERNAL_USER}-${TOOL_NAME}-${{ github.run_id }}"
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
-          git add "toolbox/tools/${{ inputs.tool_name }}/"
-          git add toolbox/registry.json
-          git commit -m "Publish tool: ${{ inputs.tool_name }} (${{ inputs.internal_user_id }})"
+          git add -A -- "toolbox/tools/$TOOL_NAME" toolbox/registry.json
+          if [ "$ACTION" = "delete" ]; then
+            git add toolbox/index.html
+            git commit -m "Delete tool: $TOOL_NAME ($INTERNAL_USER)"
+          else
+            git commit -m "Publish tool: $TOOL_NAME ($INTERNAL_USER)"
+          fi
           git push -u origin "$BRANCH"
 
       - name: Create pull request
@@ -182,16 +270,24 @@ jobs:
           GH_REPO: ${{ github.repository }}
           BRANCH: ${{ steps.push.outputs.branch }}
           PUBLISH_PAT: ${{ secrets.PUBLISH_PAT }}
+          ACTION: ${{ inputs.action }}
+          TOOL_NAME: ${{ inputs.tool_name }}
+          INTERNAL_USER: ${{ inputs.internal_user_id }}
+          CATEGORY: ${{ inputs.category }}
         run: |
-          TITLE="Publish: ${{ inputs.tool_name }}"
-          BODY="Automated publish from AI Tool Sandbox.
+          if [ "$ACTION" = "delete" ]; then
+            TITLE="Delete: ${TOOL_NAME}"
+            DETAIL="**Removes:** \`toolbox/tools/${TOOL_NAME}/\` + registry entry + portal nav link"
+            FOOTER="Merge to remove the tool from GitHub Pages."
+          else
+            TITLE="Publish: ${TOOL_NAME}"
+            DETAIL="**Path:** \`toolbox/tools/${TOOL_NAME}/\` (previous version fully replaced)"
+            FOOTER="Merge to deploy via GitHub Pages. Portal nav updates after the tool page is live."
+          fi
 
-          - **Internal user:** \`${{ inputs.internal_user_id }}\`
-          - **Tool:** \`${{ inputs.tool_name }}\`
-          - **Category:** \`${{ inputs.category }}\`
-          - **Path:** \`toolbox/tools/${{ inputs.tool_name }}/\`
-
-          Merge to deploy via GitHub Pages. Portal nav updates after the tool page is live."
+          BODY=$(printf '%s\n\n- **Internal user:** `%s`\n- **Tool:** `%s`\n- **Category:** `%s`\n- %s\n\n%s' \
+            "Automated ${ACTION} from AI Tool Sandbox." \
+            "$INTERNAL_USER" "$TOOL_NAME" "${CATEGORY:-n/a}" "$DETAIL" "$FOOTER")
 
           create_pr() {
             local token="$1"
@@ -236,23 +332,29 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           PR_URL: ${{ steps.pr.outputs.pr_url }}
           PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+          ACTION: ${{ inputs.action }}
           TOOL_NAME: ${{ inputs.tool_name }}
           INTERNAL_USER: ${{ inputs.internal_user_id }}
           CATEGORY: ${{ inputs.category }}
         run: |
           PR_LABEL="${PR_NUMBER}"
           if [ -z "$PR_LABEL" ] || [ "$PR_LABEL" = "0" ]; then PR_LABEL="open PR"; else PR_LABEL="#${PR_LABEL}"; fi
-          TEXT=":github: *New publish PR — please review and merge*
+          HEADER="New publish PR — please review and merge"
+          if [ "$ACTION" = "delete" ]; then
+            HEADER="Tool DELETE PR — please review and merge"
+          fi
+          TEXT=":github: *${HEADER}*
           • *Tool:* ${TOOL_NAME}
+          • *Action:* ${ACTION}
           • *Submitted by:* ${INTERNAL_USER}
-          • *Category:* ${CATEGORY}
+          • *Category:* ${CATEGORY:-n/a}
           • *PR:* <${PR_URL}|${PR_LABEL}>"
           curl -fsS -X POST "$SLACK_WEBHOOK_URL" \
             -H 'Content-Type: application/json' \
             -d "$(jq -n --arg text "$TEXT" '{text: $text}')"
 
       - name: Callback to server
-        if: steps.push.outcome == 'success' && steps.pr.outputs.pr_url != ''
+        if: steps.push.outcome == 'success' && steps.pr.outputs.pr_url != '' && inputs.callback_url != ''
         run: |
           curl -fsS -X POST "${{ inputs.callback_url }}" \
             -H "Content-Type: application/json" \
