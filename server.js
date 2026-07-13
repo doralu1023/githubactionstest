@@ -551,6 +551,27 @@ async function triggerPublishWorkflow(
 }
 
 /** Infer publish progress when the Actions callback never reaches this server. */
+/**
+ * Look up the PR a workflow run opened, by reconstructing its branch name
+ * (`<action>/<userSlug>-<toolSlug>-<runId>` — matches publish.yml).
+ */
+async function findPrForRun(job, runId) {
+  const action = job.action === 'delete' ? 'delete' : 'publish';
+  const userSlug = internalUserPathSlug(job.internalUserId || INTERNAL_USER_PORTAL_ID);
+  const branch = `${action}/${userSlug}-${slugify(job.toolName)}-${runId}`;
+  try {
+    const prs = await ghGet(
+      `https://api.github.com/repos/${GH_REPO}/pulls?head=${GH_OWNER}:${encodeURIComponent(branch)}&state=all&per_page=1`
+    );
+    if (Array.isArray(prs) && prs.length) {
+      return { prUrl: prs[0].html_url, prNumber: prs[0].number };
+    }
+  } catch (err) {
+    console.error('[PUBLISH-POLL] PR lookup failed:', err.message);
+  }
+  return null;
+}
+
 async function tryResolvePendingPublishJob(job) {
   const since = (job.dispatchedAt || 0) - 15000;
   if (!job.dispatchedAt || Date.now() - job.dispatchedAt < 8000) {
@@ -569,6 +590,13 @@ async function tryResolvePendingPublishJob(job) {
     const actionsUrl = match.html_url;
     if (match.status !== 'completed') {
       return { ...job, status: 'pr_open', actionsUrl, prUrl: job.prUrl || actionsUrl };
+    }
+
+    // The PR is the real outcome — a run can be marked failed by a
+    // best-effort step (e.g. callback to a dead tunnel) after the PR opened.
+    const pr = await findPrForRun(job, match.id);
+    if (pr) {
+      return { ...job, status: 'pr_open', actionsUrl, runId: match.id, ...pr };
     }
     if (match.conclusion === 'success') {
       return {

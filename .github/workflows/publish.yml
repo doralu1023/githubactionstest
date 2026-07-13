@@ -357,8 +357,11 @@ jobs:
             -H 'Content-Type: application/json' \
             -d "$(jq -n --arg text "$TEXT" '{text: $text}')"
 
+      # Best-effort: the server also resolves job state by polling, so an
+      # unreachable callback URL (e.g. dead tunnel) must not fail the run.
       - name: Callback to server
         if: steps.push.outcome == 'success' && steps.pr.outputs.pr_url != '' && inputs.callback_url != ''
+        continue-on-error: true
         run: |
           curl -fsS -X POST "${{ inputs.callback_url }}" \
             -H "Content-Type: application/json" \
