@@ -1943,6 +1943,164 @@ function downloadApp(platform) {
 }
 
 /* ════════════════════════════════════════════════
+   PUBLISHED TOOLS — list / download ZIP / delete
+════════════════════════════════════════════════ */
+let manageBaseUrl = ''
+
+function manageLog(html) {
+  const box = document.getElementById('manageLog')
+  if (box) box.innerHTML += `<br>${html}`
+}
+
+async function loadPublishedTools() {
+  const body = document.getElementById('manageToolsBody')
+  if (!body) return
+
+  body.innerHTML = `<tr><td colspan="4" style="text-align:center; color: var(--text-3); padding: var(--space-6)">Loading published tools…</td></tr>`
+
+  try {
+    const res = await fetch('/api/tools')
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+
+    manageBaseUrl = data.baseUrl || ''
+    const slugs = Object.keys(data.tools || {}).sort()
+
+    if (!slugs.length) {
+      body.innerHTML = `<tr><td colspan="4" style="text-align:center; color: var(--text-3); padding: var(--space-6)">No tools published yet</td></tr>`
+      return
+    }
+
+    body.innerHTML = slugs
+      .map((slug) => {
+        const entry = data.tools[slug] || {}
+        const safeSlug = escapeHTML(slug)
+        const liveUrl = `${manageBaseUrl}/toolbox/tools/${encodeURIComponent(slug)}/`
+        return `<tr id="manage-row-${safeSlug}">
+          <td>
+            <a href="${escapeHTML(liveUrl)}" target="_blank" rel="noopener">${escapeHTML(entry.title || slug)}</a>
+            <div style="color: var(--text-3); font-size: 0.66rem; font-family: var(--font-mono)">${safeSlug}</div>
+          </td>
+          <td>${escapeHTML(entry.category || '—')}</td>
+          <td>${escapeHTML(entry.owner || '—')}</td>
+          <td>
+            <button class="btn btn-ghost btn-sm" onclick="downloadPublishedTool('${safeSlug}', this)">⬇️ ZIP</button>
+            <button class="btn btn-orange btn-sm" onclick="deletePublishedTool('${safeSlug}', this)">🗑 Delete</button>
+          </td>
+        </tr>`
+      })
+      .join('')
+  } catch (err) {
+    body.innerHTML = `<tr><td colspan="4" style="text-align:center; color: var(--text-3); padding: var(--space-6)">Failed to load tools</td></tr>`
+    manageLog(`<span class="log-err">[manage] ❌ ${escapeHTML(err.message)}</span>`)
+  }
+}
+
+async function downloadPublishedTool(slug, btn) {
+  if (btn) btn.disabled = true
+  manageLog(`<span class="log-info">[manage] Fetching files for ${escapeHTML(slug)}…</span>`)
+
+  try {
+    const res = await fetch(`/api/tools/${encodeURIComponent(slug)}/files`)
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+
+    const entries = data.files.map((f) => ({
+      name: `${slug}/${f.path}`,
+      data: Uint8Array.from(atob(f.contentBase64), (c) => c.charCodeAt(0)),
+    }))
+
+    const blob = new Blob([buildSimpleZip(entries)], { type: 'application/zip' })
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(blob)
+    a.download = `${slug}.zip`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000)
+
+    manageLog(
+      `<span class="log-ok">[manage] ✅ ${escapeHTML(slug)}.zip ready (${data.files.length} file(s)). Edit locally, then re-upload under the same name to replace it.</span>`
+    )
+    toast(`⬇️ ${slug}.zip downloaded`)
+  } catch (err) {
+    manageLog(`<span class="log-err">[manage] ❌ Download failed: ${escapeHTML(err.message)}</span>`)
+    toast('❌ Download failed')
+  } finally {
+    if (btn) btn.disabled = false
+  }
+}
+
+async function deletePublishedTool(slug, btn) {
+  const confirmed = confirm(
+    `Delete "${slug}" from the portal?\n\nThis opens a removal PR on GitHub — the tool stays live until a reviewer merges it.`
+  )
+  if (!confirmed) return
+
+  if (btn) btn.disabled = true
+  manageLog(`<span class="log-info">[manage] Requesting delete for ${escapeHTML(slug)}…</span>`)
+
+  try {
+    const res = await fetch(`/api/tools/${encodeURIComponent(slug)}/delete`, { method: 'POST' })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+
+    manageLog(
+      `<span class="log-info">[manage] Delete workflow dispatched (job: ${escapeHTML(data.jobId)}). Waiting for the removal PR…</span>`
+    )
+    toast(`🗑 Delete requested for ${slug}`)
+    pollDeleteStatus(slug, data.jobId, btn)
+  } catch (err) {
+    manageLog(`<span class="log-err">[manage] ❌ Delete failed: ${escapeHTML(err.message)}</span>`)
+    toast('❌ Delete failed')
+    if (btn) btn.disabled = false
+  }
+}
+
+function pollDeleteStatus(slug, jobId, btn) {
+  const pollIntervalMs = 5000
+  const maxAttempts = 36 // 36 × 5s = 3 minutes to surface the PR link
+  let attempts = 0
+
+  const timer = setInterval(async () => {
+    attempts++
+    try {
+      const res = await fetch(`/api/publish-status/${jobId}`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const status = await res.json()
+
+      if (status.status === 'failed') {
+        clearInterval(timer)
+        if (btn) btn.disabled = false
+        manageLog(
+          `<span class="log-err">[manage] ❌ Delete workflow failed: ${escapeHTML(status.error || 'unknown error')}</span>`
+        )
+        return
+      }
+
+      if (status.prUrl) {
+        clearInterval(timer)
+        manageLog(
+          `<span class="log-ok">[manage] ✅ Removal PR for ${escapeHTML(slug)} is open: <a href="${escapeHTML(status.prUrl)}" target="_blank" rel="noopener">${escapeHTML(status.prUrl)}</a> — merge it to finish the delete.</span>`
+        )
+        toast('✅ Removal PR opened')
+        return
+      }
+    } catch {
+      /* transient poll error — keep trying until maxAttempts */
+    }
+
+    if (attempts >= maxAttempts) {
+      clearInterval(timer)
+      if (btn) btn.disabled = false
+      manageLog(
+        `<span class="log-warn">[manage] ⚠️ Still no PR after ${Math.round((pollIntervalMs * maxAttempts) / 60000)} min — check the Actions tab on GitHub.</span>`
+      )
+    }
+  }, pollIntervalMs)
+}
+
+/* ════════════════════════════════════════════════
    ZIP / CRC helpers
 ════════════════════════════════════════════════ */
 function stringToUint8(str) {
@@ -2070,6 +2228,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (sel) sel.value = currentRole
   switchRole(currentRole, true)
   appReady = true
+  loadPublishedTools()
   if (isSlimUI()) {
     console.info(
       '[AI Tool Sandbox] Production UI. Engineers: ?dev=1 (full UI + nav chrome), ?dev=0 to turn off.'

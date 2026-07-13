@@ -197,7 +197,7 @@ function normalizeBundlePaths(files) {
   }));
 }
 
-async function buildRegistryContentAsync(toolSlug, category, toolTitle, token) {
+async function buildRegistryContentAsync(toolSlug, category, toolTitle, ownerSlug, token) {
   let registry;
   const remoteRegistry = await getRepoContentText('toolbox/registry.json', 'main', token);
   if (remoteRegistry) {
@@ -210,9 +210,25 @@ async function buildRegistryContentAsync(toolSlug, category, toolTitle, token) {
   registry.tools[toolSlug] = {
     title: toolTitle || registry.tools[toolSlug]?.title || titleFromSlug(toolSlug),
     category,
+    // owner is set on first publish and kept on overwrite, so a re-upload by
+    // someone else stays attributed to the original owner.
+    owner: registry.tools[toolSlug]?.owner || ownerSlug || 'unknown',
   };
 
   return JSON.stringify(registry, null, 2) + '\n';
+}
+
+/** List files currently in the repo under toolbox/tools/<slug>/ (path relative to the tool dir). */
+async function listToolFiles(toolSlug, token, ref = 'main') {
+  const prefix = `toolbox/tools/${toolSlug}/`;
+  const data = await ghGetWith(
+    `https://api.github.com/repos/${GH_REPO}/git/trees/${ref}?recursive=1`,
+    token,
+    'List repo tree'
+  );
+  return (data.tree || [])
+    .filter((entry) => entry.type === 'blob' && entry.path.startsWith(prefix))
+    .map((entry) => ({ path: entry.path.slice(prefix.length), sha: entry.sha }));
 }
 
 async function createGitBlob(content, encoding, token) {
@@ -258,6 +274,7 @@ async function publishViaGitHubApi({
     toolSlug,
     category,
     toolTitle || titleFromSlug(toolSlug),
+    userSlug,
     token
   );
 
@@ -273,8 +290,14 @@ async function publishViaGitHubApi({
     'Read base commit'
   );
 
+  // manifest.json is always regenerated server-side (canonical), so a
+  // bundle-provided one is dropped to avoid duplicate tree paths.
+  const bundleFiles = files.filter(
+    (file) => String(file.path).replace(/\\/g, '/') !== 'manifest.json'
+  );
+
   const tree = [];
-  for (const file of files) {
+  for (const file of bundleFiles) {
     const blob = await createGitBlob(file.content, file.encoding, token);
     tree.push({
       path: `${toolPrefix}/${String(file.path).replace(/\\/g, '/')}`,
@@ -282,6 +305,42 @@ async function publishViaGitHubApi({
       type: 'blob',
       sha: blob.sha,
     });
+  }
+
+  const bundlePaths = bundleFiles.map((file) => String(file.path).replace(/\\/g, '/'));
+
+  // manifest.json lets the portal/sandbox fetch + zip a tool's files
+  // (GitHub Pages has no directory listing).
+  const manifest = {
+    tool: toolSlug,
+    files: [...bundlePaths].sort(),
+    updatedAt: new Date().toISOString(),
+  };
+  const manifestBlob = await createGitBlob(
+    JSON.stringify(manifest, null, 2) + '\n',
+    'utf-8',
+    token
+  );
+  tree.push({
+    path: `${toolPrefix}/manifest.json`,
+    mode: '100644',
+    type: 'blob',
+    sha: manifestBlob.sha,
+  });
+
+  // Same-name upload = full replace: stage a deletion for every existing file
+  // the new bundle does not overwrite, so stale files never survive.
+  const keepPaths = new Set([...bundlePaths, 'manifest.json']);
+  const existingFiles = await listToolFiles(toolSlug, token);
+  for (const existing of existingFiles) {
+    if (!keepPaths.has(existing.path)) {
+      tree.push({
+        path: `${toolPrefix}/${existing.path}`,
+        mode: '100644',
+        type: 'blob',
+        sha: null,
+      });
+    }
   }
 
   const registryBlob = await createGitBlob(registryContent, 'utf-8', token);
@@ -380,16 +439,20 @@ function publicPublishStatus(job) {
  *
  * @param {{ prUrl: string, prNumber?: number, toolName: string, internalUserId: string, category: string }} opts
  */
-async function notifySlackPrReview({ prUrl, prNumber, toolName, internalUserId, category }) {
+async function notifySlackPrReview({ prUrl, prNumber, toolName, internalUserId, category, action }) {
   if (!SLACK_WEBHOOK_URL || !prUrl) return;
 
+  const isDelete = action === 'delete';
   const mention = SLACK_REVIEWER_USER_ID ? `<@${SLACK_REVIEWER_USER_ID}> ` : '';
   const prLabel = prNumber ? `#${prNumber}` : 'open PR';
+  const header = isDelete
+    ? 'Tool DELETE PR — please review and merge'
+    : 'New publish PR — please review and merge';
   const text = [
-    `${mention}:github: *New publish PR — please review and merge*`,
+    `${mention}:github: *${header}*`,
     `• *Tool:* ${toolName}`,
     `• *Submitted by:* ${internalUserId}`,
-    `• *Category:* ${category || 'mall'}`,
+    `• *Category:* ${isDelete ? 'n/a' : category || 'mall'}`,
     `• *PR:* <${prUrl}|${prLabel}>`,
   ].join('\n');
 
@@ -411,13 +474,20 @@ async function notifySlackPrReview({ prUrl, prNumber, toolName, internalUserId, 
  * @param {{ prUrl: string, prNumber?: number, toolName: string, internalUserId: string, category: string }} opts
  */
 function scheduleSlackPrReview(jobId, opts) {
+  // Mark notified up front so concurrent callback + poll paths can't double-post.
+  const job = publishJobs.get(jobId);
+  if (job) {
+    if (job.slackNotified) return;
+    publishJobs.set(jobId, { ...job, slackNotified: true });
+  }
+
   notifySlackPrReview(opts)
     .then(() => {
-      const job = publishJobs.get(jobId);
-      if (job) publishJobs.set(jobId, { ...job, slackNotified: true });
       console.log(`[SLACK] Notified for PR: ${opts.toolName} → ${opts.prUrl}`);
     })
     .catch((err) => {
+      const current = publishJobs.get(jobId);
+      if (current) publishJobs.set(jobId, { ...current, slackNotified: false });
       console.error('[SLACK] Notification failed:', err.message);
     });
 }
@@ -802,6 +872,7 @@ app.post('/api/publish-complete', async (req, res) => {
         toolName: job.toolName,
         internalUserId: job.internalUserId,
         category: job.category,
+        action: job.action,
       });
     }
   }
@@ -820,6 +891,18 @@ app.get('/api/publish-status/:jobId', async (req, res) => {
     current = await tryResolvePendingPublishJob(current);
     if (current.status !== 'pending') {
       publishJobs.set(req.params.jobId, current);
+      // Callback may never arrive (e.g. tunnel down) — notify Slack from the
+      // poll path too; scheduleSlackPrReview dedupes via slackNotified.
+      if (current.prUrl && current.status !== 'failed' && !current.slackNotified) {
+        scheduleSlackPrReview(req.params.jobId, {
+          prUrl: current.prUrl,
+          prNumber: current.prNumber,
+          toolName: current.toolName,
+          internalUserId: current.internalUserId,
+          category: current.category,
+          action: current.action,
+        });
+      }
     }
     return res.json(publicPublishStatus(current));
   }
@@ -861,6 +944,101 @@ app.get('/api/publish-status/:jobId', async (req, res) => {
   }
 
   res.json(publicPublishStatus(current));
+});
+
+// Published tool management — list registry, fetch files for ZIP, delete via workflow
+
+app.get('/api/tools', async (req, res) => {
+  try {
+    const raw = await getRepoContentText('toolbox/registry.json', 'main');
+    const registry = raw ? JSON.parse(raw) : { baseUrl: GITHUB_PAGES_BASE, tools: {} };
+    res.json({
+      baseUrl: registry.baseUrl || GITHUB_PAGES_BASE,
+      tools: registry.tools || {},
+    });
+  } catch (err) {
+    console.error('[TOOLS]', err.message);
+    res.status(500).json({ error: err.message || 'Failed to read tool registry' });
+  }
+});
+
+app.get('/api/tools/:slug/files', async (req, res) => {
+  const toolSlug = slugify(req.params.slug);
+  try {
+    const token = getPublishToken();
+    const entries = await listToolFiles(toolSlug, token);
+    if (!entries.length) {
+      return res.status(404).json({ error: `No files found for tool "${toolSlug}" on main` });
+    }
+
+    const files = [];
+    for (const entry of entries) {
+      const blob = await ghGetWith(
+        `https://api.github.com/repos/${GH_REPO}/git/blobs/${entry.sha}`,
+        token,
+        `Read ${entry.path}`
+      );
+      files.push({
+        path: entry.path,
+        contentBase64: String(blob.content || '').replace(/\n/g, ''),
+      });
+    }
+
+    res.json({ tool: toolSlug, files });
+  } catch (err) {
+    console.error('[TOOLS-FILES]', err.message);
+    res.status(500).json({ error: err.message || 'Failed to fetch tool files' });
+  }
+});
+
+app.post('/api/tools/:slug/delete', async (req, res) => {
+  const toolSlug = slugify(req.params.slug);
+  if (!GH_TOKEN || !GH_REPO) {
+    return res.status(500).json({ error: 'Set GITHUB_TOKEN and GITHUB_REPO in .env' });
+  }
+
+  const jobId = `delete-${toolSlug}-${Date.now()}`;
+  // Slack is notified by the server (callback or status poll) once the PR
+  // exists; the workflow's own Slack step is a no-op unless the repo secret
+  // SLACK_WEBHOOK_URL is configured.
+  publishJobs.set(jobId, {
+    status: 'pending',
+    action: 'delete',
+    toolName: toolSlug,
+    internalUserId: INTERNAL_USER_PORTAL_ID,
+    category: '',
+    dispatchedAt: Date.now(),
+  });
+
+  // TODO: pass the real user id once auth is wired up; workflow only uses it
+  // for branch naming on deletes.
+  const inputs = {
+    action: 'delete',
+    internal_user_id: INTERNAL_USER_PORTAL_ID,
+    tool_name: toolSlug,
+  };
+  if (SERVER_URL) {
+    inputs.job_id = jobId;
+    inputs.callback_url = `${SERVER_URL}/api/publish-complete`;
+  }
+
+  try {
+    await ghPost(
+      `https://api.github.com/repos/${GH_REPO}/actions/workflows/publish.yml/dispatches`,
+      { ref: 'main', inputs }
+    );
+    res.json({ jobId });
+  } catch (err) {
+    publishJobs.delete(jobId);
+    const ghMsg = err.response?.data?.message || err.message;
+    console.error('[TOOLS-DELETE]', ghMsg);
+    let msg = ghMsg || 'Failed to dispatch delete workflow';
+    if (/Unexpected inputs provided/i.test(ghMsg || '')) {
+      msg =
+        'publish.yml on GitHub main is out of date — push the latest .github/workflows/publish.yml (action input), then retry.';
+    }
+    res.status(500).json({ error: msg });
+  }
 });
 
 // 前端輪詢

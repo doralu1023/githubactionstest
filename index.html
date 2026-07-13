@@ -545,6 +545,51 @@
         </div>
       </div>
 
+      <!-- ── PUBLISHED TOOLS (manage) ── -->
+      <div class="card card--manage" id="manageCard">
+        <div class="card-header">
+          <span class="card-kicker" aria-hidden="true">Manage</span>
+          <span class="icon" aria-hidden="true">🗂️</span>
+          <span class="card-heading">Published Tools</span>
+        </div>
+        <div class="card-body">
+          <p class="publish-panel__lede" style="margin-bottom: var(--space-4)">
+            Tools currently registered in <code>toolbox/registry.json</code> on GitHub. Download a
+            ZIP to edit locally, then re-upload under the <strong>same name</strong> to fully
+            replace the published version. Delete opens a removal PR — the tool stays live until a
+            reviewer merges it.
+          </p>
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th scope="col">Tool</th>
+                <th scope="col">Category</th>
+                <th scope="col">Owner</th>
+                <th scope="col">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="manageToolsBody">
+              <tr>
+                <td
+                  colspan="4"
+                  style="text-align: center; color: var(--text-3); padding: var(--space-6)"
+                >
+                  Loading published tools…
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="flex-end" style="margin-top: var(--space-3)">
+            <button class="btn btn-ghost btn-sm" id="manageRefreshBtn" onclick="loadPublishedTools()">
+              ↻ Refresh
+            </button>
+          </div>
+          <div class="log-box" id="manageLog" aria-live="polite" style="margin-top: var(--space-3)">
+            <span class="log-info">[manage] Tool list loads from GitHub on page load…</span>
+          </div>
+        </div>
+      </div>
+
       <!-- ── SECURITY ARCHITECTURE ── -->
       <div class="card card--arch" id="archCard" data-ui-full-only>
         <div class="card-header">

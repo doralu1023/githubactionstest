@@ -236,6 +236,10 @@ body::before {
   grid-template-columns: 1fr 1fr;
   gap: var(--space-5);
 }
+/* long unbreakable content (e.g. filenames) must not blow the 1fr columns past the viewport */
+.grid-2 > * {
+  min-width: 0;
+}
 @media (max-width: 860px) { .grid-2 { grid-template-columns: 1fr; } }
 
 /* ═══════════════════════════════════════════════════════════
@@ -561,6 +565,26 @@ body::before {
   border-bottom-color: color-mix(in oklch, var(--zone-accent) 24%, var(--border));
 }
 
+.card--manage {
+  --zone-accent: oklch(52% 0.12 250);
+  margin-top: var(--space-5);
+  border-top: 3px solid var(--zone-accent);
+  border-color: color-mix(in oklch, var(--zone-accent) 24%, var(--border));
+  background: color-mix(in oklch, var(--zone-accent) 6%, var(--bg-1));
+  box-shadow:
+    0 1px 0 oklch(99% 0.01 28 / 0.9) inset,
+    0 18px 44px oklch(30% 0.07 250 / 0.1);
+}
+
+.card--manage .card-header {
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklch, var(--zone-accent) 13%, var(--bg-2)) 0%,
+    var(--bg-2) 100%
+  );
+  border-bottom-color: color-mix(in oklch, var(--zone-accent) 24%, var(--border));
+}
+
 .card--arch {
   --zone-accent: oklch(42% 0.07 28);
   margin-top: var(--space-5);
@@ -735,7 +759,7 @@ body.ui-slim .mode-toggle label[for="modeSanitize"] {
   border-bottom: 1px solid var(--border);
 }
 .fle:last-child { border-bottom: none; }
-.fle-name { color: var(--text); flex: 1; font-family: var(--font-mono); font-size: 0.68rem; }
+.fle-name { color: var(--text); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 0.68rem; }
 .fle-size { color: var(--text-3); font-size: 0.66rem; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .fle-total {
   margin-top: var(--space-1);
@@ -1148,6 +1172,7 @@ body.ui-slim .mode-toggle label[for="modeSanitize"] {
   line-height: 1.85;
   max-height: 180px;
   overflow-y: auto;
+  overflow-wrap: anywhere;
   margin-top: var(--space-3);
   color: var(--text-2);
 }
@@ -1199,6 +1224,13 @@ body.ui-slim .mode-toggle label[for="modeSanitize"] {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--space-3);
+}
+.sanit-report-header > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .sanit-table { width: 100%; border-collapse: collapse; font-size: 0.68rem; }
 .sanit-table th {
@@ -1251,6 +1283,9 @@ body.ui-slim .mode-toggle label[for="modeSanitize"] {
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
   white-space: nowrap;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   flex-shrink: 0;
   transition: color 150ms, border-color 150ms;
 }
@@ -1296,6 +1331,7 @@ body.ui-slim .mode-toggle label[for="modeSanitize"] {
 }
 .sanit-dl-item {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
@@ -1687,6 +1723,9 @@ body.ui-slim .workflow-lane-heading#reviewLaneHeading {
 }
 
 /* ── Publish category picker ── */
+#publishCategoryToolName {
+  overflow-wrap: anywhere;
+}
 .category-picker {
   display: flex;
   flex-direction: column;
