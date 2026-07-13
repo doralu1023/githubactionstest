@@ -327,7 +327,7 @@ jobs:
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
 
       - name: Notify Slack
-        if: steps.pr.outputs.pr_url != '' && secrets.SLACK_WEBHOOK_URL != ''
+        if: steps.pr.outputs.pr_url != ''
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           PR_URL: ${{ steps.pr.outputs.pr_url }}
@@ -337,6 +337,10 @@ jobs:
           INTERNAL_USER: ${{ inputs.internal_user_id }}
           CATEGORY: ${{ inputs.category }}
         run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "SLACK_WEBHOOK_URL not set — skipping Slack notification."
+            exit 0
+          fi
           PR_LABEL="${PR_NUMBER}"
           if [ -z "$PR_LABEL" ] || [ "$PR_LABEL" = "0" ]; then PR_LABEL="open PR"; else PR_LABEL="#${PR_LABEL}"; fi
           HEADER="New publish PR — please review and merge"
